@@ -608,8 +608,8 @@ export default function EventRespondPage() {
                     fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.25rem'
                 }}>
                     {mode === 'available'
-                        ? '✅ Select the days you ARE available'
-                        : '❌ Select the days you are NOT available'}
+                        ? '✅ You are selecting days you ARE available'
+                        : '❌ You are selecting days you are NOT available'}
                 </p>
                 {selectedDates.length > 0 && (
                     <p style={{
