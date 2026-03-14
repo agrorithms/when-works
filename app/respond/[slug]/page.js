@@ -21,36 +21,39 @@ export default function EventRespondPage() {
     const [mode, setMode] = useState('available')
     const [confirmed, setConfirmed] = useState(false)
     const [loading, setLoading] = useState(false)
-    const [saving, setSaving] = useState(false)
     const [error, setError] = useState('')
     const [responseId, setResponseId] = useState(null)
     const [sessionStarted, setSessionStarted] = useState(false)
     const [sessionLoading, setSessionLoading] = useState(false)
     const [responseCount, setResponseCount] = useState(0)
     const [displayName, setDisplayName] = useState('')
-    const saveTimeout = useRef(null)
-    const sessionStarting = useRef(false)
-    const eventRef = useRef(null)
 
-    // Separate selections for each mode
     const [availableDates, setAvailableDates] = useState([])
     const [unavailableDates, setUnavailableDates] = useState([])
 
-    // Track which mode was last saved to DB
-    const [savedMode, setSavedMode] = useState('available')
-    const [hasMadeSelection, setHasMadeSelection] = useState(false)
+    const availableDatesRef = useRef([])
+    const unavailableDatesRef = useRef([])
+    const savedModeRef = useRef('available')
+    const responseIdRef = useRef(null)
+    const saveTimeout = useRef(null)
+    const nameTimeout = useRef(null)
+    const sessionStarting = useRef(false)
+    const eventRef = useRef(null)
+    const isSaving = useRef(false)
 
-    // Empty submission confirmation
+    const [saveStatus, setSaveStatus] = useState('idle')
+    const [hasMadeSelection, setHasMadeSelection] = useState(false)
     const [showEmptyConfirm, setShowEmptyConfirm] = useState(false)
     const [emptyConfirmChecked, setEmptyConfirmChecked] = useState(false)
-
-    // Pending date tap
     const [pendingDate, setPendingDate] = useState(null)
 
-    // Get the active date list based on current mode
     const selectedDates = mode === 'available' ? availableDates : unavailableDates
 
-    // Load saved name from localStorage on mount
+    useEffect(() => { availableDatesRef.current = availableDates }, [availableDates])
+    useEffect(() => { unavailableDatesRef.current = unavailableDates }, [unavailableDates])
+    useEffect(() => { responseIdRef.current = responseId }, [responseId])
+
+    // Load saved name
     useEffect(() => {
         const savedName = localStorage.getItem(NAME_STORAGE_KEY)
         if (savedName) {
@@ -85,25 +88,23 @@ export default function EventRespondPage() {
         fetchEvent()
     }, [slug])
 
-    // Auto-start session when we have the event loaded
+    // Auto-start session
     useEffect(() => {
         if (!event || sessionStarted || sessionStarting.current) return
 
-        // First check if there's a session stored for this specific event
         const sessionName = localStorage.getItem(getSessionKey(slug))
         if (sessionName) {
             startSession(null, sessionName)
             return
         }
 
-        // Otherwise check if they have a saved display name
         const savedName = localStorage.getItem(NAME_STORAGE_KEY)
         if (savedName) {
             startSession(savedName)
         }
     }, [event])
 
-    // Process pending date after session starts
+    // Process pending date
     useEffect(() => {
         if (sessionStarted && pendingDate) {
             processDateToggle(pendingDate)
@@ -111,40 +112,82 @@ export default function EventRespondPage() {
         }
     }, [sessionStarted, pendingDate])
 
-    // Auto-save when dates change
+    // Debounced name save — updates DB when name changes while session is active
     useEffect(() => {
-        if (!responseId || !hasMadeSelection) return
+        if (!responseIdRef.current || !sessionStarted) return
 
-        if (saveTimeout.current) clearTimeout(saveTimeout.current)
+        if (nameTimeout.current) clearTimeout(nameTimeout.current)
 
-        saveTimeout.current = setTimeout(() => {
-            autoSave()
-        }, 500)
+        nameTimeout.current = setTimeout(async () => {
+            const currentResponseId = responseIdRef.current
+            if (!currentResponseId) return
+
+            const trimmedName = name.trim()
+            const newDisplayName = trimmedName || displayName
+            const newInternalName = trimmedName ? trimmedName.toLowerCase() : null
+
+            const updateData = { display_name: newDisplayName }
+
+            // Only update internal name if they provided a real name
+            if (newInternalName && !displayName.startsWith('Guest #')) {
+                updateData.name = newInternalName
+            } else if (newInternalName) {
+                updateData.name = newInternalName
+            }
+
+            await supabase
+                .from('responses')
+                .update(updateData)
+                .eq('id', currentResponseId)
+
+            // Update localStorage
+            if (trimmedName) {
+                localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
+                localStorage.setItem(getSessionKey(slug), newInternalName)
+                setDisplayName(trimmedName)
+            }
+        }, 1000)
 
         return () => {
-            if (saveTimeout.current) clearTimeout(saveTimeout.current)
+            if (nameTimeout.current) clearTimeout(nameTimeout.current)
         }
-    }, [availableDates, unavailableDates, savedMode])
+    }, [name, sessionStarted])
 
-    const autoSave = async () => {
-        if (!responseId) return
-        setSaving(true)
+    const scheduleSave = useCallback(() => {
+        if (saveTimeout.current) clearTimeout(saveTimeout.current)
 
-        const datesToSave = savedMode === 'available' ? availableDates : unavailableDates
+        saveTimeout.current = setTimeout(async () => {
+            const currentResponseId = responseIdRef.current
+            if (!currentResponseId) return
+            if (isSaving.current) return
 
-        const { error: updateError } = await supabase
-            .from('responses')
-            .update({
-                response_type: savedMode,
-                dates: datesToSave.sort(),
-                confirmed: false,
-                display_name: name.trim() || displayName
-            })
-            .eq('id', responseId)
+            isSaving.current = true
+            setSaveStatus('saving')
 
-        if (updateError) console.error('Auto-save error:', updateError)
-        setSaving(false)
-    }
+            const currentMode = savedModeRef.current
+            const datesToSave = currentMode === 'available'
+                ? [...availableDatesRef.current]
+                : [...unavailableDatesRef.current]
+
+            const { error: updateError } = await supabase
+                .from('responses')
+                .update({
+                    response_type: currentMode,
+                    dates: datesToSave.sort(),
+                    confirmed: false
+                })
+                .eq('id', currentResponseId)
+
+            if (updateError) console.error('Auto-save error:', updateError)
+
+            isSaving.current = false
+            setSaveStatus('saved')
+
+            setTimeout(() => {
+                setSaveStatus(prev => prev === 'saved' ? 'idle' : prev)
+            }, 2000)
+        }, 2000)
+    }, [])
 
     const getNextGuestNumber = async (eventId) => {
         const { data } = await supabase
@@ -174,11 +217,8 @@ export default function EventRespondPage() {
         setError('')
 
         const currentEvent = eventRef.current
-
-        // Determine the internal name to look up
         const lookupName = sessionInternalName || (sessionDisplayName ? sessionDisplayName.trim().toLowerCase() : null)
 
-        // If we have a name to look up, try to find existing response
         if (lookupName) {
             const { data: existing } = await supabase
                 .from('responses')
@@ -190,25 +230,28 @@ export default function EventRespondPage() {
             if (existing && existing.length > 0) {
                 const prev = existing[0]
                 setResponseId(prev.id)
+                responseIdRef.current = prev.id
                 setMode(prev.response_type)
-                setSavedMode(prev.response_type)
+                savedModeRef.current = prev.response_type
                 setConfirmed(prev.confirmed)
                 setDisplayName(prev.display_name)
 
-                // Pre-fill name field if it was a named response
                 if (!prev.name.startsWith('guest_')) {
                     setName(prev.display_name)
                 }
 
                 if (prev.response_type === 'available') {
                     setAvailableDates(prev.dates || [])
+                    availableDatesRef.current = prev.dates || []
                     setUnavailableDates([])
+                    unavailableDatesRef.current = []
                 } else {
                     setUnavailableDates(prev.dates || [])
+                    unavailableDatesRef.current = prev.dates || []
                     setAvailableDates([])
+                    availableDatesRef.current = []
                 }
 
-                // Save session for this event
                 localStorage.setItem(getSessionKey(slug), prev.name)
 
                 setSessionStarted(true)
@@ -218,7 +261,6 @@ export default function EventRespondPage() {
             }
         }
 
-        // Create new response
         const trimmedName = (sessionDisplayName || name).trim()
         const guestNumber = await getNextGuestNumber(currentEvent.id)
         const finalDisplayName = trimmedName || `Guest #${guestNumber}`
@@ -245,13 +287,11 @@ export default function EventRespondPage() {
         }
 
         setResponseId(data[0].id)
+        responseIdRef.current = data[0].id
         setDisplayName(finalDisplayName)
         setResponseCount(prev => prev + 1)
 
-        // Save session for this event (works for both named and anonymous)
         localStorage.setItem(getSessionKey(slug), finalInternalName)
-
-        // Save display name if provided
         if (trimmedName) {
             localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
         }
@@ -261,42 +301,34 @@ export default function EventRespondPage() {
         sessionStarting.current = false
     }, [name, slug])
 
-    const handleNameBlur = () => {
-        if (!sessionStarted && !sessionStarting.current && event) {
-            startSession(name.trim() || null)
-        }
-    }
-
-    const handleNameKeyDown = (e) => {
-        if (e.key === 'Enter' && !sessionStarted && !sessionStarting.current && event) {
-            e.target.blur()
-            startSession(name.trim() || null)
-        }
-    }
-
-    const processDateToggle = (dateStr) => {
+    const processDateToggle = useCallback((dateStr) => {
         setHasMadeSelection(true)
-        setSavedMode(mode)
-
+        savedModeRef.current = mode
         setShowEmptyConfirm(false)
         setEmptyConfirmChecked(false)
 
         if (mode === 'available') {
-            setAvailableDates(prev =>
-                prev.includes(dateStr)
+            setAvailableDates(prev => {
+                const next = prev.includes(dateStr)
                     ? prev.filter(d => d !== dateStr)
                     : [...prev, dateStr]
-            )
+                availableDatesRef.current = next
+                return next
+            })
         } else {
-            setUnavailableDates(prev =>
-                prev.includes(dateStr)
+            setUnavailableDates(prev => {
+                const next = prev.includes(dateStr)
                     ? prev.filter(d => d !== dateStr)
                     : [...prev, dateStr]
-            )
+                unavailableDatesRef.current = next
+                return next
+            })
         }
-    }
 
-    const toggleDate = (dateStr) => {
+        scheduleSave()
+    }, [mode, scheduleSave])
+
+    const toggleDate = useCallback((dateStr) => {
         if (!sessionStarted && !sessionStarting.current) {
             setPendingDate(dateStr)
             startSession(name.trim() || null)
@@ -309,7 +341,7 @@ export default function EventRespondPage() {
         }
 
         processDateToggle(dateStr)
-    }
+    }, [sessionStarted, sessionLoading, name, startSession, processDateToggle])
 
     const handleModeChange = () => {
         const newMode = mode === 'available' ? 'unavailable' : 'available'
@@ -326,8 +358,13 @@ export default function EventRespondPage() {
             return
         }
 
+        if (saveTimeout.current) clearTimeout(saveTimeout.current)
+        if (nameTimeout.current) clearTimeout(nameTimeout.current)
+
         setLoading(true)
         setError('')
+
+        const trimmedName = name.trim()
 
         const updateData = {
             response_type: mode,
@@ -335,14 +372,12 @@ export default function EventRespondPage() {
             confirmed: true
         }
 
-        // Update name if they entered one after starting session
-        if (name.trim() && name.trim() !== displayName) {
-            updateData.display_name = name.trim()
-            updateData.name = name.trim().toLowerCase()
-            // Update session key with new name
-            localStorage.setItem(getSessionKey(slug), name.trim().toLowerCase())
-            localStorage.setItem(NAME_STORAGE_KEY, name.trim())
-            setDisplayName(name.trim())
+        if (trimmedName) {
+            updateData.display_name = trimmedName
+            updateData.name = trimmedName.toLowerCase()
+            localStorage.setItem(getSessionKey(slug), trimmedName.toLowerCase())
+            localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
+            setDisplayName(trimmedName)
         }
 
         const { error: updateError } = await supabase
@@ -354,22 +389,28 @@ export default function EventRespondPage() {
             setError('Something went wrong. Please try again.')
         } else {
             setConfirmed(true)
-            setSavedMode(mode)
+            savedModeRef.current = mode
         }
 
         setLoading(false)
     }
 
     const handleReset = () => {
+        if (saveTimeout.current) clearTimeout(saveTimeout.current)
+        if (nameTimeout.current) clearTimeout(nameTimeout.current)
         setSessionStarted(false)
         setResponseId(null)
+        responseIdRef.current = null
         setAvailableDates([])
         setUnavailableDates([])
+        availableDatesRef.current = []
+        unavailableDatesRef.current = []
         setHasMadeSelection(false)
         setConfirmed(false)
         setName('')
         setDisplayName('')
         setMode('available')
+        setSaveStatus('idle')
         localStorage.removeItem(NAME_STORAGE_KEY)
         localStorage.removeItem(getSessionKey(slug))
         sessionStarting.current = false
@@ -470,7 +511,7 @@ export default function EventRespondPage() {
 
     return (
         <div className="container">
-            {/* Header with deadline and response count */}
+            {/* Header */}
             <div style={{
                 background: '#1e293b', borderRadius: '10px', padding: '1rem',
                 marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between',
@@ -479,9 +520,7 @@ export default function EventRespondPage() {
                 <div>
                     <h1 style={{ marginBottom: '0.25rem', fontSize: '1.3rem' }}>📅 {event.title}</h1>
                     {event.description && (
-                        <p style={{ color: '#94a3b8', fontSize: '0.85rem' }}>
-                            {event.description}
-                        </p>
+                        <p style={{ color: '#94a3b8', fontSize: '0.85rem' }}>{event.description}</p>
                     )}
                 </div>
 
@@ -507,7 +546,7 @@ export default function EventRespondPage() {
                 </div>
             </div>
 
-            {/* Name field — optional */}
+            {/* Name field — always editable */}
             <div style={{
                 display: 'flex', alignItems: 'center', gap: '0.75rem',
                 marginBottom: '1rem'
@@ -519,14 +558,7 @@ export default function EventRespondPage() {
                         placeholder="Your name (optional)"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
-                        onBlur={handleNameBlur}
-                        onKeyDown={handleNameKeyDown}
-                        disabled={sessionStarted}
-                        style={{
-                            marginBottom: 0,
-                            opacity: sessionStarted ? 0.7 : 1,
-                            cursor: sessionStarted ? 'default' : 'text'
-                        }}
+                        style={{ marginBottom: 0 }}
                     />
                 </div>
 
@@ -543,14 +575,13 @@ export default function EventRespondPage() {
                     </button>
                 )}
 
-                {/* Save status */}
-                {saving && (
+                {saveStatus === 'saving' && (
                     <span style={{
                         color: '#f59e0b', fontSize: '0.8rem', background: '#422006',
                         padding: '0.3rem 0.6rem', borderRadius: '6px', whiteSpace: 'nowrap'
                     }}>💾 Saving...</span>
                 )}
-                {!saving && responseId && hasMadeSelection && (
+                {saveStatus === 'saved' && (
                     <span style={{
                         color: '#10b981', fontSize: '0.8rem', background: '#052e16',
                         padding: '0.3rem 0.6rem', borderRadius: '6px', whiteSpace: 'nowrap'
@@ -578,6 +609,42 @@ export default function EventRespondPage() {
                     : 'Click below if it would be easier to choose only dates you ARE available'}
             </p>
 
+            {/* Clickable mode banner */}
+            <div
+                onPointerDown={(e) => {
+                    e.preventDefault()
+                    handleModeChange()
+                }}
+                style={{
+                    background: mode === 'available' ? '#065f46' : '#7f1d1d',
+                    border: mode === 'available' ? '2px solid #10b981' : '2px solid #ef4444',
+                    borderRadius: '10px',
+                    padding: '0.75rem 1rem',
+                    marginBottom: '1rem',
+                    textAlign: 'center',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                    userSelect: 'none',
+                    touchAction: 'manipulation'
+                }}
+            >
+                <p style={{
+                    color: mode === 'available' ? '#a7f3d0' : '#fca5a5',
+                    fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.25rem'
+                }}>
+                    {mode === 'available'
+                        ? '✅ Select the days you ARE available'
+                        : '❌ Select the days you are NOT available'}
+                </p>
+                <p style={{
+                    color: mode === 'available' ? '#6ee7b7' : '#fca5a5',
+                    fontSize: '0.8rem', opacity: 0.8
+                }}>
+                    {selectedDates.length} day{selectedDates.length !== 1 ? 's' : ''} selected
+                </p>
+            </div>
+
+
             {otherModeDates.length > 0 && (
                 <p style={{
                     color: '#94a3b8', fontSize: '0.8rem', marginBottom: '1rem',
@@ -588,46 +655,7 @@ export default function EventRespondPage() {
                 </p>
             )}
 
-            {/* Clickable mode banner */}
-            <div
-                onClick={handleModeChange}
-                style={{
-                    background: mode === 'available' ? '#065f46' : '#7f1d1d',
-                    border: mode === 'available' ? '2px solid #10b981' : '2px solid #ef4444',
-                    borderRadius: '10px',
-                    padding: '0.75rem 1rem',
-                    marginBottom: '1rem',
-                    textAlign: 'center',
-                    cursor: 'pointer',
-                    transition: 'all 0.15s ease',
-                    userSelect: 'none'
-                }}
-            >
-                <p style={{
-                    color: mode === 'available' ? '#a7f3d0' : '#fca5a5',
-                    fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.25rem'
-                }}>
-                    {mode === 'available'
-                        ? '✅ You are selecting days you ARE available'
-                        : '❌ You are selecting days you are NOT available'}
-                </p>
-                {selectedDates.length > 0 && (
-                    <p style={{
-                        color: mode === 'available' ? '#6ee7b7' : '#fca5a5',
-                        fontSize: '0.8rem', opacity: 0.8
-                    }}>
-                        {selectedDates.length} day{selectedDates.length !== 1 ? 's' : ''} selected
-                    </p>
-                )}
-            </div>
-
-            <p style={{ color: '#64748b', fontSize: '0.8rem', marginBottom: '1rem' }}>
-                {mode === 'available'
-                    ? '💡 Tap the days you CAN hang out. All other days will be assumed unavailable (only select days under one of the above modes).'
-                    : '💡 Tap the days you CANNOT hang out. All other days will be assumed available (only select days under one of the above modes).'}
-            </p>
-
-            {/* Calendar — always visible */}
+            {/* Calendar */}
             <Calendar
                 selectedDates={selectedDates}
                 onToggleDate={toggleDate}
@@ -684,7 +712,7 @@ export default function EventRespondPage() {
                 </div>
             )}
 
-            {/* Anonymous warning before confirm */}
+            {/* Anonymous indicator */}
             {sessionStarted && !name.trim() && (
                 <div style={{
                     background: '#1e3a2f',
@@ -721,11 +749,7 @@ export default function EventRespondPage() {
             <p style={{ color: '#64748b', fontSize: '0.75rem', marginTop: '0.75rem', textAlign: 'center' }}>
                 {!sessionStarted
                     ? 'Tap a date to get started — name is optional'
-                    : (
-                        <>
-                            Your selections are auto-saved as you tap. Hit confirm when you&apos;re done!
-                        </>
-                    )
+                    : 'Your selections are auto-saved as you tap. Hit confirm when you\'re done!'
                 }
             </p>
         </div>

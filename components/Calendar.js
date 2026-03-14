@@ -32,10 +32,10 @@ function MonthGrid({ year, month, selectedDates, onToggleDate, mode, startDate, 
         const isSelected = selectedDates.includes(dateStr)
 
         let className = 'day-cell'
-        let style = {}
+        let style = { touchAction: 'manipulation' }
 
         if (!selectable) {
-            style = { opacity: 0.15, cursor: 'default' }
+            style = { ...style, opacity: 0.15, cursor: 'default' }
         } else if (isSelected) {
             className += mode === 'available' ? ' available' : ' unavailable'
         }
@@ -45,7 +45,12 @@ function MonthGrid({ year, month, selectedDates, onToggleDate, mode, startDate, 
                 key={dateStr}
                 className={className}
                 style={style}
-                onClick={() => selectable && onToggleDate(dateStr)}
+                onPointerDown={(e) => {
+                    if (selectable) {
+                        e.preventDefault()
+                        onToggleDate(dateStr)
+                    }
+                }}
             >
                 {day}
             </div>
@@ -64,7 +69,7 @@ function MonthGrid({ year, month, selectedDates, onToggleDate, mode, startDate, 
                 {monthName}
             </h2>
 
-            <div className="calendar-grid">
+            <div className="calendar-grid" style={{ touchAction: 'manipulation' }}>
                 {DAYS.map(d => (
                     <div key={d} className="day-label">{d}</div>
                 ))}
@@ -75,10 +80,8 @@ function MonthGrid({ year, month, selectedDates, onToggleDate, mode, startDate, 
 }
 
 export default function Calendar({ selectedDates, onToggleDate, mode, startDate, endDate, blockedDates = [] }) {
-    // Calculate all months that need to be displayed
     const getMonthsInRange = () => {
         if (!startDate || !endDate) {
-            // Fallback: show current month
             const now = new Date()
             return [{ year: now.getFullYear(), month: now.getMonth() }]
         }
