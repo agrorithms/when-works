@@ -315,3 +315,18 @@ h2 {
   padding: 3rem;
   color: #64748b;
 }
+
+/* Prevent mobile double-tap zoom delay on interactive elements */
+.calendar-grid,
+.day-cell,
+.mode-toggle,
+.submit-btn {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Prevent text selection while tapping dates rapidly */
+.calendar-grid {
+  user-select: none;
+  -webkit-user-select: none;
+}
