@@ -28,23 +28,20 @@ export default function EventRespondPage() {
     const [responseCount, setResponseCount] = useState(0)
     const [displayName, setDisplayName] = useState('')
 
-    // Use state for UI display of dates
     const [availableDates, setAvailableDates] = useState([])
     const [unavailableDates, setUnavailableDates] = useState([])
 
-    // Refs for save operations — these don't trigger re-renders
     const availableDatesRef = useRef([])
     const unavailableDatesRef = useRef([])
     const savedModeRef = useRef('available')
     const responseIdRef = useRef(null)
     const saveTimeout = useRef(null)
+    const nameTimeout = useRef(null)
     const sessionStarting = useRef(false)
     const eventRef = useRef(null)
     const isSaving = useRef(false)
 
-    // Saving indicator (use state only for the small badge, not calendar)
-    const [saveStatus, setSaveStatus] = useState('idle') // 'idle' | 'saving' | 'saved'
-
+    const [saveStatus, setSaveStatus] = useState('idle')
     const [hasMadeSelection, setHasMadeSelection] = useState(false)
     const [showEmptyConfirm, setShowEmptyConfirm] = useState(false)
     const [emptyConfirmChecked, setEmptyConfirmChecked] = useState(false)
@@ -52,18 +49,9 @@ export default function EventRespondPage() {
 
     const selectedDates = mode === 'available' ? availableDates : unavailableDates
 
-    // Keep refs in sync with state
-    useEffect(() => {
-        availableDatesRef.current = availableDates
-    }, [availableDates])
-
-    useEffect(() => {
-        unavailableDatesRef.current = unavailableDates
-    }, [unavailableDates])
-
-    useEffect(() => {
-        responseIdRef.current = responseId
-    }, [responseId])
+    useEffect(() => { availableDatesRef.current = availableDates }, [availableDates])
+    useEffect(() => { unavailableDatesRef.current = unavailableDates }, [unavailableDates])
+    useEffect(() => { responseIdRef.current = responseId }, [responseId])
 
     // Load saved name
     useEffect(() => {
@@ -124,7 +112,47 @@ export default function EventRespondPage() {
         }
     }, [sessionStarted, pendingDate])
 
-    // Schedule save — uses refs so it doesn't depend on state
+    // Debounced name save — updates DB when name changes while session is active
+    useEffect(() => {
+        if (!responseIdRef.current || !sessionStarted) return
+
+        if (nameTimeout.current) clearTimeout(nameTimeout.current)
+
+        nameTimeout.current = setTimeout(async () => {
+            const currentResponseId = responseIdRef.current
+            if (!currentResponseId) return
+
+            const trimmedName = name.trim()
+            const newDisplayName = trimmedName || displayName
+            const newInternalName = trimmedName ? trimmedName.toLowerCase() : null
+
+            const updateData = { display_name: newDisplayName }
+
+            // Only update internal name if they provided a real name
+            if (newInternalName && !displayName.startsWith('Guest #')) {
+                updateData.name = newInternalName
+            } else if (newInternalName) {
+                updateData.name = newInternalName
+            }
+
+            await supabase
+                .from('responses')
+                .update(updateData)
+                .eq('id', currentResponseId)
+
+            // Update localStorage
+            if (trimmedName) {
+                localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
+                localStorage.setItem(getSessionKey(slug), newInternalName)
+                setDisplayName(trimmedName)
+            }
+        }, 1000)
+
+        return () => {
+            if (nameTimeout.current) clearTimeout(nameTimeout.current)
+        }
+    }, [name, sessionStarted])
+
     const scheduleSave = useCallback(() => {
         if (saveTimeout.current) clearTimeout(saveTimeout.current)
 
@@ -155,11 +183,10 @@ export default function EventRespondPage() {
             isSaving.current = false
             setSaveStatus('saved')
 
-            // Clear "saved" indicator after 2 seconds
             setTimeout(() => {
                 setSaveStatus(prev => prev === 'saved' ? 'idle' : prev)
             }, 2000)
-        }, 2000) // 2 second debounce — gives plenty of time for rapid tapping
+        }, 2000)
     }, [])
 
     const getNextGuestNumber = async (eventId) => {
@@ -274,19 +301,6 @@ export default function EventRespondPage() {
         sessionStarting.current = false
     }, [name, slug])
 
-    const handleNameBlur = () => {
-        if (!sessionStarted && !sessionStarting.current && event) {
-            startSession(name.trim() || null)
-        }
-    }
-
-    const handleNameKeyDown = (e) => {
-        if (e.key === 'Enter' && !sessionStarted && !sessionStarting.current && event) {
-            e.target.blur()
-            startSession(name.trim() || null)
-        }
-    }
-
     const processDateToggle = useCallback((dateStr) => {
         setHasMadeSelection(true)
         savedModeRef.current = mode
@@ -311,7 +325,6 @@ export default function EventRespondPage() {
             })
         }
 
-        // Schedule save using refs (won't cause re-render cascade)
         scheduleSave()
     }, [mode, scheduleSave])
 
@@ -345,11 +358,13 @@ export default function EventRespondPage() {
             return
         }
 
-        // Cancel any pending auto-save
         if (saveTimeout.current) clearTimeout(saveTimeout.current)
+        if (nameTimeout.current) clearTimeout(nameTimeout.current)
 
         setLoading(true)
         setError('')
+
+        const trimmedName = name.trim()
 
         const updateData = {
             response_type: mode,
@@ -357,12 +372,12 @@ export default function EventRespondPage() {
             confirmed: true
         }
 
-        if (name.trim() && name.trim() !== displayName) {
-            updateData.display_name = name.trim()
-            updateData.name = name.trim().toLowerCase()
-            localStorage.setItem(getSessionKey(slug), name.trim().toLowerCase())
-            localStorage.setItem(NAME_STORAGE_KEY, name.trim())
-            setDisplayName(name.trim())
+        if (trimmedName) {
+            updateData.display_name = trimmedName
+            updateData.name = trimmedName.toLowerCase()
+            localStorage.setItem(getSessionKey(slug), trimmedName.toLowerCase())
+            localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
+            setDisplayName(trimmedName)
         }
 
         const { error: updateError } = await supabase
@@ -382,6 +397,7 @@ export default function EventRespondPage() {
 
     const handleReset = () => {
         if (saveTimeout.current) clearTimeout(saveTimeout.current)
+        if (nameTimeout.current) clearTimeout(nameTimeout.current)
         setSessionStarted(false)
         setResponseId(null)
         responseIdRef.current = null
@@ -530,7 +546,7 @@ export default function EventRespondPage() {
                 </div>
             </div>
 
-            {/* Name field */}
+            {/* Name field — always editable */}
             <div style={{
                 display: 'flex', alignItems: 'center', gap: '0.75rem',
                 marginBottom: '1rem'
@@ -542,14 +558,7 @@ export default function EventRespondPage() {
                         placeholder="Your name (optional)"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
-                        onBlur={handleNameBlur}
-                        onKeyDown={handleNameKeyDown}
-                        disabled={sessionStarted}
-                        style={{
-                            marginBottom: 0,
-                            opacity: sessionStarted ? 0.7 : 1,
-                            cursor: sessionStarted ? 'default' : 'text'
-                        }}
+                        style={{ marginBottom: 0 }}
                     />
                 </div>
 
@@ -627,15 +636,14 @@ export default function EventRespondPage() {
                         ? '✅ Select the days you ARE available'
                         : '❌ Select the days you are NOT available'}
                 </p>
-                {selectedDates.length > 0 && (
-                    <p style={{
-                        color: mode === 'available' ? '#6ee7b7' : '#fca5a5',
-                        fontSize: '0.8rem', opacity: 0.8
-                    }}>
-                        {selectedDates.length} day{selectedDates.length !== 1 ? 's' : ''} selected
-                    </p>
-                )}
+                <p style={{
+                    color: mode === 'available' ? '#6ee7b7' : '#fca5a5',
+                    fontSize: '0.8rem', opacity: 0.8
+                }}>
+                    {selectedDates.length} day{selectedDates.length !== 1 ? 's' : ''} selected
+                </p>
             </div>
+
 
             {otherModeDates.length > 0 && (
                 <p style={{
@@ -704,7 +712,7 @@ export default function EventRespondPage() {
                 </div>
             )}
 
-            {/* Anonymous warning */}
+            {/* Anonymous indicator */}
             {sessionStarted && !name.trim() && (
                 <div style={{
                     background: '#1e3a2f',
