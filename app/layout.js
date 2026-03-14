@@ -1,7 +1,7 @@
 import './globals.css'
 
 export const metadata = {
-  title: 'Hangout Planner',
+  title: 'When Works',
   description: 'Find the best day for everyone to hang out!',
 }
 

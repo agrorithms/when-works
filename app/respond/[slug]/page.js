@@ -1,10 +1,13 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams } from 'next/navigation'
 import { supabase } from '../../../lib/supabase'
 import Calendar from '../../../components/Calendar'
 import Link from 'next/link'
+
+const NAME_STORAGE_KEY = 'when_works_name'
+const getSessionKey = (slug) => `when_works_session_${slug}`
 
 export default function EventRespondPage() {
     const params = useParams()
@@ -21,8 +24,13 @@ export default function EventRespondPage() {
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState('')
     const [responseId, setResponseId] = useState(null)
-    const [nameSubmitted, setNameSubmitted] = useState(false)
+    const [sessionStarted, setSessionStarted] = useState(false)
+    const [sessionLoading, setSessionLoading] = useState(false)
+    const [responseCount, setResponseCount] = useState(0)
+    const [displayName, setDisplayName] = useState('')
     const saveTimeout = useRef(null)
+    const sessionStarting = useRef(false)
+    const eventRef = useRef(null)
 
     // Separate selections for each mode
     const [availableDates, setAvailableDates] = useState([])
@@ -36,9 +44,21 @@ export default function EventRespondPage() {
     const [showEmptyConfirm, setShowEmptyConfirm] = useState(false)
     const [emptyConfirmChecked, setEmptyConfirmChecked] = useState(false)
 
+    // Pending date tap
+    const [pendingDate, setPendingDate] = useState(null)
+
     // Get the active date list based on current mode
     const selectedDates = mode === 'available' ? availableDates : unavailableDates
 
+    // Load saved name from localStorage on mount
+    useEffect(() => {
+        const savedName = localStorage.getItem(NAME_STORAGE_KEY)
+        if (savedName) {
+            setName(savedName)
+        }
+    }, [])
+
+    // Fetch event
     useEffect(() => {
         const fetchEvent = async () => {
             const { data, error } = await supabase
@@ -51,12 +71,45 @@ export default function EventRespondPage() {
                 setEventNotFound(true)
             } else {
                 setEvent(data[0])
+                eventRef.current = data[0]
+
+                const { count } = await supabase
+                    .from('responses')
+                    .select('*', { count: 'exact', head: true })
+                    .eq('event_id', data[0].id)
+                setResponseCount(count || 0)
             }
             setEventLoading(false)
         }
 
         fetchEvent()
     }, [slug])
+
+    // Auto-start session when we have the event loaded
+    useEffect(() => {
+        if (!event || sessionStarted || sessionStarting.current) return
+
+        // First check if there's a session stored for this specific event
+        const sessionName = localStorage.getItem(getSessionKey(slug))
+        if (sessionName) {
+            startSession(null, sessionName)
+            return
+        }
+
+        // Otherwise check if they have a saved display name
+        const savedName = localStorage.getItem(NAME_STORAGE_KEY)
+        if (savedName) {
+            startSession(savedName)
+        }
+    }, [event])
+
+    // Process pending date after session starts
+    useEffect(() => {
+        if (sessionStarted && pendingDate) {
+            processDateToggle(pendingDate)
+            setPendingDate(null)
+        }
+    }, [sessionStarted, pendingDate])
 
     // Auto-save when dates change
     useEffect(() => {
@@ -84,7 +137,8 @@ export default function EventRespondPage() {
             .update({
                 response_type: savedMode,
                 dates: datesToSave.sort(),
-                confirmed: false
+                confirmed: false,
+                display_name: name.trim() || displayName
             })
             .eq('id', responseId)
 
@@ -92,70 +146,138 @@ export default function EventRespondPage() {
         setSaving(false)
     }
 
-    const startSession = async () => {
-        if (!name.trim()) {
-            setError('Please enter your name!')
+    const getNextGuestNumber = async (eventId) => {
+        const { data } = await supabase
+            .from('responses')
+            .select('display_name')
+            .eq('event_id', eventId)
+            .like('display_name', 'Guest %')
+
+        if (!data) return 1
+
+        const guestNumbers = data
+            .map(r => {
+                const match = r.display_name.match(/Guest #(\d+)/)
+                return match ? parseInt(match[1]) : 0
+            })
+            .filter(n => n > 0)
+
+        return guestNumbers.length > 0 ? Math.max(...guestNumbers) + 1 : 1
+    }
+
+    const startSession = useCallback(async (sessionDisplayName, sessionInternalName) => {
+        if (sessionStarting.current) return
+        if (!eventRef.current) return
+
+        sessionStarting.current = true
+        setSessionLoading(true)
+        setError('')
+
+        const currentEvent = eventRef.current
+
+        // Determine the internal name to look up
+        const lookupName = sessionInternalName || (sessionDisplayName ? sessionDisplayName.trim().toLowerCase() : null)
+
+        // If we have a name to look up, try to find existing response
+        if (lookupName) {
+            const { data: existing } = await supabase
+                .from('responses')
+                .select('*')
+                .eq('name', lookupName)
+                .eq('event_id', currentEvent.id)
+                .limit(1)
+
+            if (existing && existing.length > 0) {
+                const prev = existing[0]
+                setResponseId(prev.id)
+                setMode(prev.response_type)
+                setSavedMode(prev.response_type)
+                setConfirmed(prev.confirmed)
+                setDisplayName(prev.display_name)
+
+                // Pre-fill name field if it was a named response
+                if (!prev.name.startsWith('guest_')) {
+                    setName(prev.display_name)
+                }
+
+                if (prev.response_type === 'available') {
+                    setAvailableDates(prev.dates || [])
+                    setUnavailableDates([])
+                } else {
+                    setUnavailableDates(prev.dates || [])
+                    setAvailableDates([])
+                }
+
+                // Save session for this event
+                localStorage.setItem(getSessionKey(slug), prev.name)
+
+                setSessionStarted(true)
+                setSessionLoading(false)
+                sessionStarting.current = false
+                return
+            }
+        }
+
+        // Create new response
+        const trimmedName = (sessionDisplayName || name).trim()
+        const guestNumber = await getNextGuestNumber(currentEvent.id)
+        const finalDisplayName = trimmedName || `Guest #${guestNumber}`
+        const finalInternalName = trimmedName ? trimmedName.toLowerCase() : `guest_${guestNumber}`
+
+        const { data, error: insertError } = await supabase
+            .from('responses')
+            .insert({
+                name: finalInternalName,
+                display_name: finalDisplayName,
+                response_type: 'available',
+                dates: [],
+                confirmed: false,
+                event_id: currentEvent.id
+            })
+            .select()
+
+        if (insertError) {
+            setError('Something went wrong. Please try again.')
+            console.error(insertError)
+            sessionStarting.current = false
+            setSessionLoading(false)
             return
         }
 
-        setLoading(true)
-        setError('')
+        setResponseId(data[0].id)
+        setDisplayName(finalDisplayName)
+        setResponseCount(prev => prev + 1)
 
-        const cleanName = name.trim().toLowerCase()
+        // Save session for this event (works for both named and anonymous)
+        localStorage.setItem(getSessionKey(slug), finalInternalName)
 
-        const { data: existing } = await supabase
-            .from('responses')
-            .select('*')
-            .eq('name', cleanName)
-            .eq('event_id', event.id)
-            .limit(1)
-
-        if (existing && existing.length > 0) {
-            const prev = existing[0]
-            setResponseId(prev.id)
-            setMode(prev.response_type)
-            setSavedMode(prev.response_type)
-            setConfirmed(prev.confirmed)
-
-            if (prev.response_type === 'available') {
-                setAvailableDates(prev.dates || [])
-                setUnavailableDates([])
-            } else {
-                setUnavailableDates(prev.dates || [])
-                setAvailableDates([])
-            }
-
-            setNameSubmitted(true)
-        } else {
-            const { data, error: insertError } = await supabase
-                .from('responses')
-                .insert({
-                    name: cleanName,
-                    display_name: name.trim(),
-                    response_type: mode,
-                    dates: [],
-                    confirmed: false,
-                    event_id: event.id
-                })
-                .select()
-
-            if (insertError) {
-                setError('Something went wrong. Please try again.')
-                console.error(insertError)
-            } else {
-                setResponseId(data[0].id)
-                setNameSubmitted(true)
-            }
+        // Save display name if provided
+        if (trimmedName) {
+            localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
         }
 
-        setLoading(false)
+        setSessionStarted(true)
+        setSessionLoading(false)
+        sessionStarting.current = false
+    }, [name, slug])
+
+    const handleNameBlur = () => {
+        if (!sessionStarted && !sessionStarting.current && event) {
+            startSession(name.trim() || null)
+        }
     }
 
-    const toggleDate = (dateStr) => {
+    const handleNameKeyDown = (e) => {
+        if (e.key === 'Enter' && !sessionStarted && !sessionStarting.current && event) {
+            e.target.blur()
+            startSession(name.trim() || null)
+        }
+    }
+
+    const processDateToggle = (dateStr) => {
         setHasMadeSelection(true)
         setSavedMode(mode)
 
-        // Reset empty confirm state if they start selecting dates
         setShowEmptyConfirm(false)
         setEmptyConfirmChecked(false)
 
@@ -174,9 +296,24 @@ export default function EventRespondPage() {
         }
     }
 
-    const handleModeChange = (newMode) => {
+    const toggleDate = (dateStr) => {
+        if (!sessionStarted && !sessionStarting.current) {
+            setPendingDate(dateStr)
+            startSession(name.trim() || null)
+            return
+        }
+
+        if (sessionLoading) {
+            setPendingDate(dateStr)
+            return
+        }
+
+        processDateToggle(dateStr)
+    }
+
+    const handleModeChange = () => {
+        const newMode = mode === 'available' ? 'unavailable' : 'available'
         setMode(newMode)
-        // Reset empty confirm when switching modes
         setShowEmptyConfirm(false)
         setEmptyConfirmChecked(false)
     }
@@ -184,7 +321,6 @@ export default function EventRespondPage() {
     const handleConfirm = async () => {
         const datesToConfirm = mode === 'available' ? availableDates : unavailableDates
 
-        // If empty and user hasn't acknowledged the empty confirmation
         if (datesToConfirm.length === 0 && !emptyConfirmChecked) {
             setShowEmptyConfirm(true)
             return
@@ -193,13 +329,25 @@ export default function EventRespondPage() {
         setLoading(true)
         setError('')
 
+        const updateData = {
+            response_type: mode,
+            dates: datesToConfirm.sort(),
+            confirmed: true
+        }
+
+        // Update name if they entered one after starting session
+        if (name.trim() && name.trim() !== displayName) {
+            updateData.display_name = name.trim()
+            updateData.name = name.trim().toLowerCase()
+            // Update session key with new name
+            localStorage.setItem(getSessionKey(slug), name.trim().toLowerCase())
+            localStorage.setItem(NAME_STORAGE_KEY, name.trim())
+            setDisplayName(name.trim())
+        }
+
         const { error: updateError } = await supabase
             .from('responses')
-            .update({
-                response_type: mode,
-                dates: datesToConfirm.sort(),
-                confirmed: true
-            })
+            .update(updateData)
             .eq('id', responseId)
 
         if (updateError) {
@@ -212,7 +360,21 @@ export default function EventRespondPage() {
         setLoading(false)
     }
 
-    // Build the confirmation message for empty submissions
+    const handleReset = () => {
+        setSessionStarted(false)
+        setResponseId(null)
+        setAvailableDates([])
+        setUnavailableDates([])
+        setHasMadeSelection(false)
+        setConfirmed(false)
+        setName('')
+        setDisplayName('')
+        setMode('available')
+        localStorage.removeItem(NAME_STORAGE_KEY)
+        localStorage.removeItem(getSessionKey(slug))
+        sessionStarting.current = false
+    }
+
     const getEmptyConfirmMessage = () => {
         if (mode === 'available') {
             return 'You have not selected any available days. This means you are not available on any of the proposed dates.'
@@ -228,6 +390,17 @@ export default function EventRespondPage() {
             return 'Yes, I confirm that I am available on all of the proposed dates'
         }
     }
+
+    const getDaysUntilDeadline = () => {
+        if (!event || !event.response_deadline) return null
+        const deadline = new Date(event.response_deadline + 'T23:59:59')
+        const today = new Date()
+        const diff = deadline - today
+        const days = Math.ceil(diff / (1000 * 60 * 60 * 24))
+        return days > 0 ? days : 0
+    }
+
+    const daysLeft = getDaysUntilDeadline()
 
     if (eventLoading) {
         return (
@@ -250,33 +423,6 @@ export default function EventRespondPage() {
         )
     }
 
-    if (!nameSubmitted) {
-        return (
-            <div className="container">
-                <h1 style={{ marginTop: '1rem' }}>📅 {event.title}</h1>
-                {event.description && (
-                    <p style={{ color: '#94a3b8', marginBottom: '1rem' }}>{event.description}</p>
-                )}
-                <h2>First, tell us who you are</h2>
-
-                <input
-                    type="text"
-                    className="input-field"
-                    placeholder="Enter your name..."
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && startSession()}
-                />
-
-                {error && <p style={{ color: '#ef4444', margin: '0.5rem 0' }}>{error}</p>}
-
-                <button className="submit-btn" onClick={startSession} disabled={loading}>
-                    {loading ? 'Loading...' : 'Continue →'}
-                </button>
-            </div>
-        )
-    }
-
     if (confirmed) {
         const confirmedDates = mode === 'available' ? availableDates : unavailableDates
         const isEmptySubmission = confirmedDates.length === 0
@@ -286,6 +432,10 @@ export default function EventRespondPage() {
                 <h1>✅</h1>
                 <h1 style={{ color: '#10b981' }}>Confirmed!</h1>
                 <h2>Your availability for &quot;{event.title}&quot; has been locked in.</h2>
+
+                <p style={{ color: '#94a3b8', marginTop: '0.5rem', fontSize: '0.9rem' }}>
+                    Responding as: <strong>{name.trim() || displayName}</strong>
+                </p>
 
                 {isEmptySubmission ? (
                     <p style={{ color: '#94a3b8', marginTop: '0.5rem' }}>
@@ -315,63 +465,117 @@ export default function EventRespondPage() {
         )
     }
 
-    // Count for the inactive mode
     const otherModeDates = mode === 'available' ? unavailableDates : availableDates
     const otherModeLabel = mode === 'available' ? 'unavailable' : 'available'
 
     return (
         <div className="container">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h1>📅 {event.title}</h1>
+            {/* Header with deadline and response count */}
+            <div style={{
+                background: '#1e293b', borderRadius: '10px', padding: '1rem',
+                marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between',
+                alignItems: 'center', flexWrap: 'wrap', gap: '1rem'
+            }}>
+                <div>
+                    <h1 style={{ marginBottom: '0.25rem', fontSize: '1.3rem' }}>📅 {event.title}</h1>
+                    {event.description && (
+                        <p style={{ color: '#94a3b8', fontSize: '0.85rem' }}>
+                            {event.description}
+                        </p>
+                    )}
+                </div>
+
+                <div style={{ textAlign: 'right' }}>
+                    {daysLeft !== null && (
+                        <div style={{
+                            background: daysLeft <= 2 ? '#7f1d1d' : '#1e3a2f',
+                            border: daysLeft <= 2 ? '2px solid #ef4444' : '2px solid #10b981',
+                            color: daysLeft <= 2 ? '#fca5a5' : '#a7f3d0',
+                            padding: '0.5rem 0.75rem', borderRadius: '8px',
+                            fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.5rem'
+                        }}>
+                            {daysLeft === 0 ? '⏰ Due today!' : `⏰ ${daysLeft} day${daysLeft !== 1 ? 's' : ''} left`}
+                        </div>
+                    )}
+                    <div style={{
+                        background: '#312e81', border: '2px solid #6366f1',
+                        color: '#c7d2fe', padding: '0.5rem 0.75rem', borderRadius: '8px',
+                        fontSize: '0.8rem', fontWeight: 600
+                    }}>
+                        👥 {responseCount} responded
+                    </div>
+                </div>
+            </div>
+
+            {/* Name field — optional */}
+            <div style={{
+                display: 'flex', alignItems: 'center', gap: '0.75rem',
+                marginBottom: '1rem'
+            }}>
+                <div style={{ flex: 1 }}>
+                    <input
+                        type="text"
+                        className="input-field"
+                        placeholder="Your name (optional)"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        onBlur={handleNameBlur}
+                        onKeyDown={handleNameKeyDown}
+                        disabled={sessionStarted}
+                        style={{
+                            marginBottom: 0,
+                            opacity: sessionStarted ? 0.7 : 1,
+                            cursor: sessionStarted ? 'default' : 'text'
+                        }}
+                    />
+                </div>
+
+                {sessionStarted && (
+                    <button
+                        onClick={handleReset}
+                        style={{
+                            background: '#334155', color: '#94a3b8', border: 'none',
+                            padding: '0.5rem 0.75rem', borderRadius: '8px',
+                            cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap'
+                        }}
+                    >
+                        Reset
+                    </button>
+                )}
+
+                {/* Save status */}
                 {saving && (
                     <span style={{
                         color: '#f59e0b', fontSize: '0.8rem', background: '#422006',
-                        padding: '0.3rem 0.6rem', borderRadius: '6px'
+                        padding: '0.3rem 0.6rem', borderRadius: '6px', whiteSpace: 'nowrap'
                     }}>💾 Saving...</span>
                 )}
                 {!saving && responseId && hasMadeSelection && (
                     <span style={{
                         color: '#10b981', fontSize: '0.8rem', background: '#052e16',
-                        padding: '0.3rem 0.6rem', borderRadius: '6px'
+                        padding: '0.3rem 0.6rem', borderRadius: '6px', whiteSpace: 'nowrap'
                     }}>✓ Saved</span>
                 )}
             </div>
 
-            <h2>Hi {name.trim()}! Tap the days, then confirm.</h2>
+            {sessionLoading && (
+                <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '1rem' }}>
+                    Loading your session...
+                </p>
+            )}
 
-            <p style={{ color: '#94a3b8', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-                I want to mark days I am:
-            </p>
+            {error && <p style={{ color: '#ef4444', margin: '0 0 1rem 0' }}>{error}</p>}
 
-            <div className="mode-toggle">
-                <button
-                    className={mode === 'available' ? 'active-available' : ''}
-                    onClick={() => handleModeChange('available')}
-                >
-                    ✅ Available
-                    {availableDates.length > 0 && (
-                        <span style={{ marginLeft: '0.4rem', fontSize: '0.75rem', opacity: 0.8 }}>
-                            ({availableDates.length})
-                        </span>
-                    )}
-                </button>
-                <button
-                    className={mode === 'unavailable' ? 'active-unavailable' : ''}
-                    onClick={() => handleModeChange('unavailable')}
-                >
-                    ❌ Not Available
-                    {unavailableDates.length > 0 && (
-                        <span style={{ marginLeft: '0.4rem', fontSize: '0.75rem', opacity: 0.8 }}>
-                            ({unavailableDates.length})
-                        </span>
-                    )}
-                </button>
-            </div>
-
-            <p style={{ color: '#64748b', fontSize: '0.8rem', marginBottom: '1rem' }}>
+            {/* Mode description text */}
+            <p style={{
+                color: '#94a3b8',
+                fontSize: '0.85rem',
+                marginBottom: '0.5rem',
+                textAlign: 'center'
+            }}>
                 {mode === 'available'
-                    ? '💡 Tap the days you CAN hang out. All other days will be assumed unavailable.'
-                    : '💡 Tap the days you CANNOT hang out. All other days will be assumed available.'}
+                    ? 'Click below if it would be easier to choose only dates you are NOT available'
+                    : 'Click below if it would be easier to choose only dates you ARE available'}
             </p>
 
             {otherModeDates.length > 0 && (
@@ -384,6 +588,46 @@ export default function EventRespondPage() {
                 </p>
             )}
 
+            {/* Clickable mode banner */}
+            <div
+                onClick={handleModeChange}
+                style={{
+                    background: mode === 'available' ? '#065f46' : '#7f1d1d',
+                    border: mode === 'available' ? '2px solid #10b981' : '2px solid #ef4444',
+                    borderRadius: '10px',
+                    padding: '0.75rem 1rem',
+                    marginBottom: '1rem',
+                    textAlign: 'center',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                    userSelect: 'none'
+                }}
+            >
+                <p style={{
+                    color: mode === 'available' ? '#a7f3d0' : '#fca5a5',
+                    fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.25rem'
+                }}>
+                    {mode === 'available'
+                        ? '✅ Select the days you ARE available'
+                        : '❌ Select the days you are NOT available'}
+                </p>
+                {selectedDates.length > 0 && (
+                    <p style={{
+                        color: mode === 'available' ? '#6ee7b7' : '#fca5a5',
+                        fontSize: '0.8rem', opacity: 0.8
+                    }}>
+                        {selectedDates.length} day{selectedDates.length !== 1 ? 's' : ''} selected
+                    </p>
+                )}
+            </div>
+
+            <p style={{ color: '#64748b', fontSize: '0.8rem', marginBottom: '1rem' }}>
+                {mode === 'available'
+                    ? '💡 Tap the days you CAN hang out. All other days will be assumed unavailable (only select days under one of the above modes).'
+                    : '💡 Tap the days you CANNOT hang out. All other days will be assumed available (only select days under one of the above modes).'}
+            </p>
+
+            {/* Calendar — always visible */}
             <Calendar
                 selectedDates={selectedDates}
                 onToggleDate={toggleDate}
@@ -392,14 +636,6 @@ export default function EventRespondPage() {
                 endDate={event.date_range_end}
                 blockedDates={event.blocked_dates || []}
             />
-
-            {selectedDates.length > 0 && (
-                <p style={{ color: '#94a3b8', fontSize: '0.85rem', margin: '0.5rem 0' }}>
-                    {selectedDates.length} day{selectedDates.length !== 1 ? 's' : ''} selected as {mode}
-                </p>
-            )}
-
-            {error && <p style={{ color: '#ef4444', margin: '0.5rem 0' }}>{error}</p>}
 
             {/* Empty submission confirmation */}
             {showEmptyConfirm && (
@@ -448,24 +684,49 @@ export default function EventRespondPage() {
                 </div>
             )}
 
-            <button
-                className="submit-btn"
-                onClick={handleConfirm}
-                disabled={loading || (showEmptyConfirm && !emptyConfirmChecked)}
-                style={{ marginTop: '1rem' }}
-            >
-                {loading
-                    ? 'Confirming...'
-                    : showEmptyConfirm && emptyConfirmChecked
-                        ? '✅ Confirm Empty Submission'
-                        : `✅ Confirm as ${mode === 'available' ? 'Available' : 'Not Available'}`
-                }
-            </button>
+            {/* Anonymous warning before confirm */}
+            {sessionStarted && !name.trim() && (
+                <div style={{
+                    background: '#1e3a2f',
+                    border: '2px solid #10b981',
+                    borderRadius: '10px',
+                    padding: '0.75rem',
+                    marginTop: '1rem',
+                    marginBottom: '0.5rem',
+                    fontSize: '0.85rem',
+                    color: '#a7f3d0',
+                    textAlign: 'center'
+                }}>
+                    👤 You&apos;re responding as <strong>{displayName}</strong> — add your name above to personalize
+                </div>
+            )}
+
+            {/* Confirm button */}
+            {sessionStarted && (
+                <button
+                    className="submit-btn"
+                    onClick={handleConfirm}
+                    disabled={loading || (showEmptyConfirm && !emptyConfirmChecked)}
+                    style={{ marginTop: '1rem' }}
+                >
+                    {loading
+                        ? 'Confirming...'
+                        : showEmptyConfirm && emptyConfirmChecked
+                            ? '✅ Confirm Empty Submission'
+                            : `✅ Confirm as ${name.trim() || displayName}`
+                    }
+                </button>
+            )}
 
             <p style={{ color: '#64748b', fontSize: '0.75rem', marginTop: '0.75rem', textAlign: 'center' }}>
-                Your selections are auto-saved as you tap. Hit confirm when you&apos;re done!
-                <br />
-                Confirming will save your <strong>{mode}</strong> selections.
+                {!sessionStarted
+                    ? 'Tap a date to get started — name is optional'
+                    : (
+                        <>
+                            Your selections are auto-saved as you tap. Hit confirm when you&apos;re done!
+                        </>
+                    )
+                }
             </p>
         </div>
     )

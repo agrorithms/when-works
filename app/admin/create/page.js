@@ -14,6 +14,7 @@ export default function CreateEventPage() {
     const [newSlug, setNewSlug] = useState('')
     const [newStartDate, setNewStartDate] = useState('')
     const [newEndDate, setNewEndDate] = useState('')
+    const [newResponseDeadline, setNewResponseDeadline] = useState('')
     const [newBlockedDates, setNewBlockedDates] = useState([])
     const [createError, setCreateError] = useState('')
     const [createLoading, setCreateLoading] = useState(false)
@@ -88,6 +89,8 @@ export default function CreateEventPage() {
         if (!newEndDate) { setCreateError('Please select an end date.'); return }
         if (newEndDate < newStartDate) { setCreateError('End date must be after start date.'); return }
         if (!newSlug.trim()) { setCreateError('Please enter a URL slug.'); return }
+        if (!newResponseDeadline) { setCreateError('Please set a response deadline.'); return }
+        if (newResponseDeadline < today) { setCreateError('Response deadline must be in the future.'); return }
 
         setCreateLoading(true)
         setCreateError('')
@@ -100,6 +103,7 @@ export default function CreateEventPage() {
                 slug: newSlug.trim(),
                 date_range_start: newStartDate,
                 date_range_end: newEndDate,
+                response_deadline: newResponseDeadline,
                 blocked_dates: newBlockedDates
             })
 
@@ -160,6 +164,7 @@ export default function CreateEventPage() {
                             setNewSlug('')
                             setNewStartDate('')
                             setNewEndDate('')
+                            setNewResponseDeadline('')
                             setNewBlockedDates([])
                         }}
                     >
@@ -172,6 +177,7 @@ export default function CreateEventPage() {
 
     const startMin = today
     const endMin = newStartDate || today
+    const deadlineMin = newEndDate || today
 
     return (
         <div className="container">
@@ -222,7 +228,7 @@ export default function CreateEventPage() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
                 <div>
                     <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
-                        Start Date *
+                        Event Start Date *
                     </label>
                     <input
                         type="date"
@@ -238,7 +244,7 @@ export default function CreateEventPage() {
                 </div>
                 <div>
                     <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
-                        End Date *
+                        Event End Date *
                     </label>
                     <input
                         type="date"
@@ -251,6 +257,22 @@ export default function CreateEventPage() {
                         {newStartDate ? 'Must be on or after start date' : 'Cannot be in the past'}
                     </p>
                 </div>
+            </div>
+
+            <div>
+                <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
+                    Response Deadline *
+                </label>
+                <input
+                    type="date"
+                    className="input-field"
+                    value={newResponseDeadline}
+                    min={deadlineMin}
+                    onChange={(e) => setNewResponseDeadline(e.target.value)}
+                />
+                <p style={{ color: '#64748b', fontSize: '0.7rem', marginTop: '-0.5rem' }}>
+                    When you need responses by
+                </p>
             </div>
 
             {newStartDate && newEndDate && newEndDate >= newStartDate && (
