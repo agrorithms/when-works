@@ -46,23 +46,61 @@ export default function CreateEventPage() {
     }
 
     const handleStartDateChange = (val) => {
+        if (val && val < today) {
+            setCreateError('Start date cannot be in the past.')
+            return
+        }
+
+        setCreateError('')
         setNewStartDate(val)
+
         if (newEndDate && val > newEndDate) {
             setNewEndDate('')
+            setCreateError('End date must be on or after start date.')
         }
+
         if (newEndDate) {
             setNewBlockedDates(prev => prev.filter(d => d >= val && d <= newEndDate))
         }
     }
 
     const handleEndDateChange = (val) => {
-        setNewEndDate(val)
-        if (newStartDate && val < newStartDate) {
-            setNewStartDate('')
+        if (val && val < today) {
+            setCreateError('End date cannot be in the past.')
+            return
         }
+
+        if (newStartDate && val < newStartDate) {
+            setCreateError('End date must be on or after start date.')
+            return
+        }
+
+        setCreateError('')
+        setNewEndDate(val)
+
         if (newStartDate) {
             setNewBlockedDates(prev => prev.filter(d => d >= newStartDate && d <= val))
         }
+
+        if (newResponseDeadline && val && newResponseDeadline > val) {
+            setNewResponseDeadline('')
+            setCreateError('Response deadline must be on or before event end date.')
+        }
+    }
+
+    const handleResponseDeadlineChange = (val) => {
+        if (val && val < today) {
+            setCreateError('Response deadline must be in the future.')
+            return
+        }
+
+        if (newEndDate && val > newEndDate) {
+            setCreateError('Response deadline must be on or before event end date.')
+            return
+        }
+
+        setCreateError('')
+        setNewResponseDeadline(val)
     }
 
     const toggleBlockedDate = (dateStr) => {
@@ -92,6 +130,7 @@ export default function CreateEventPage() {
         if (!newSlug.trim()) { setCreateError('Please enter a URL slug.'); return }
         if (!newResponseDeadline) { setCreateError('Please set a response deadline.'); return }
         if (newResponseDeadline < today) { setCreateError('Response deadline must be in the future.'); return }
+        if (newResponseDeadline > newEndDate) { setCreateError('Response deadline must be on or before event end date.'); return }
 
         setCreateLoading(true)
         setCreateError('')
@@ -180,7 +219,8 @@ export default function CreateEventPage() {
 
     const startMin = today
     const endMin = newStartDate || today
-    const deadlineMin = newEndDate || today
+    const deadlineMin = today
+    const deadlineMax = newEndDate || undefined
 
     return (
         <div className="container">
@@ -228,8 +268,8 @@ export default function CreateEventPage() {
                 />
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
-                <div>
+            <div className="date-range-grid">
+                <div className="date-field-col">
                     <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
                         Event Start Date *
                     </label>
@@ -245,7 +285,7 @@ export default function CreateEventPage() {
                         Cannot be in the past
                     </p>
                 </div>
-                <div>
+                <div className="date-field-col">
                     <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
                         Event End Date *
                     </label>
@@ -271,10 +311,11 @@ export default function CreateEventPage() {
                     className="input-field"
                     value={newResponseDeadline}
                     min={deadlineMin}
-                    onChange={(e) => setNewResponseDeadline(e.target.value)}
+                    max={deadlineMax}
+                    onChange={(e) => handleResponseDeadlineChange(e.target.value)}
                 />
                 <p style={{ color: '#64748b', fontSize: '0.7rem', marginTop: '-0.5rem' }}>
-                    When you need responses by
+                    Must be today or later, and on/before the event end date
                 </p>
             </div>
 
