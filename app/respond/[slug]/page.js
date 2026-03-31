@@ -17,7 +17,10 @@ export default function EventRespondPage() {
     const [eventLoading, setEventLoading] = useState(true)
     const [eventNotFound, setEventNotFound] = useState(false)
 
-    const [name, setName] = useState('')
+    const [name, setName] = useState(() => {
+        if (typeof window === 'undefined') return ''
+        return localStorage.getItem(NAME_STORAGE_KEY) || ''
+    })
     const [includesSO, setIncludesSO] = useState(false)
     const [mode, setMode] = useState('available')
     const [confirmed, setConfirmed] = useState(false)
@@ -59,14 +62,6 @@ export default function EventRespondPage() {
     useEffect(() => { responseIdRef.current = responseId }, [responseId])
     useEffect(() => { nameRef.current = name }, [name])
 
-    // Load saved name
-    useEffect(() => {
-        const savedName = localStorage.getItem(NAME_STORAGE_KEY)
-        if (savedName) {
-            setName(savedName)
-        }
-    }, [])
-
     // Fetch event
     useEffect(() => {
         const fetchEvent = async () => {
@@ -105,30 +100,6 @@ export default function EventRespondPage() {
 
         fetchEvent()
     }, [slug])
-
-    // Auto-start session
-    useEffect(() => {
-        if (!event || sessionStarted || sessionStarting.current) return
-
-        const sessionName = localStorage.getItem(getSessionKey(slug))
-        if (sessionName) {
-            startSession(null, sessionName)
-            return
-        }
-
-        const savedName = localStorage.getItem(NAME_STORAGE_KEY)
-        if (savedName) {
-            startSession(savedName)
-        }
-    }, [event])
-
-    // Process pending date
-    useEffect(() => {
-        if (sessionStarted && pendingDate) {
-            processDateToggle(pendingDate)
-            setPendingDate(null)
-        }
-    }, [sessionStarted, pendingDate])
 
     // Debounced name save — updates DB when name changes while session is active
     useEffect(() => {
@@ -169,7 +140,7 @@ export default function EventRespondPage() {
         return () => {
             if (nameTimeout.current) clearTimeout(nameTimeout.current)
         }
-    }, [name, sessionStarted])
+    }, [name, sessionStarted, displayName, slug])
 
     useEffect(() => {
         if (!responseIdRef.current || !sessionStarted) return
@@ -391,6 +362,37 @@ export default function EventRespondPage() {
 
         processDateToggle(dateStr)
     }, [sessionStarted, sessionLoading, startSession, processDateToggle])
+
+    // Auto-start session
+    useEffect(() => {
+        if (!event || sessionStarted || sessionStarting.current) return
+
+        const timeoutId = setTimeout(() => {
+            const sessionName = localStorage.getItem(getSessionKey(slug))
+            if (sessionName) {
+                startSession(null, sessionName)
+                return
+            }
+
+            const savedName = localStorage.getItem(NAME_STORAGE_KEY)
+            if (savedName) {
+                startSession(savedName)
+            }
+        }, 0)
+
+        return () => clearTimeout(timeoutId)
+    }, [event, sessionStarted, slug, startSession])
+
+    // Process pending date
+    useEffect(() => {
+        if (sessionStarted && pendingDate) {
+            const timeoutId = setTimeout(() => {
+                processDateToggle(pendingDate)
+                setPendingDate(null)
+            }, 0)
+            return () => clearTimeout(timeoutId)
+        }
+    }, [sessionStarted, pendingDate, processDateToggle])
 
     const handleModeChange = () => {
         const newMode = mode === 'available' ? 'unavailable' : 'available'

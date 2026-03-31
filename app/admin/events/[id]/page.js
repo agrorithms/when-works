@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useParams } from 'next/navigation'
 import { supabase } from '../../../../lib/supabase'
 import Link from 'next/link'
@@ -19,13 +19,7 @@ export default function EventDetailPage() {
     const [tab, setTab] = useState('overview')
     const [showUnconfirmed, setShowUnconfirmed] = useState(false)
 
-    useEffect(() => {
-        fetchData()
-    }, [eventId])
-
-    const fetchData = async () => {
-        setLoading(true)
-
+    const fetchData = useCallback(async () => {
         const { data: eventData, error: eventError } = await supabase
             .from('events')
             .select('*')
@@ -47,6 +41,16 @@ export default function EventDetailPage() {
         setEvent(eventData[0])
         setResponses(responsesData || [])
         setLoading(false)
+    }, [eventId])
+
+    useEffect(() => {
+        const timeoutId = setTimeout(fetchData, 0)
+        return () => clearTimeout(timeoutId)
+    }, [fetchData])
+
+    const handleRefresh = () => {
+        setLoading(true)
+        fetchData()
     }
 
     const getShareUrl = (slug) => {
@@ -219,7 +223,7 @@ export default function EventDetailPage() {
             {/* Controls */}
             <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
                 <button
-                    onClick={fetchData}
+                    onClick={handleRefresh}
                     style={{
                         background: '#334155', color: '#e2e8f0', border: 'none',
                         padding: '0.5rem 1rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem'
