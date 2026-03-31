@@ -1,8 +1,22 @@
 'use client'
 
+import { memo } from 'react'
+
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
-function MonthGrid({ year, month, selectedDates, onToggleDate, mode, startDate, endDate, blockedDates }) {
+function MonthGrid({
+    year,
+    month,
+    selectedDates,
+    onToggleDate,
+    mode,
+    startDate,
+    endDate,
+    blockedDates,
+    showAvailabilityCounts,
+    availabilityCounts,
+    availabilityTotal
+}) {
     const firstDay = new Date(year, month, 1).getDay()
     const daysInMonth = new Date(year, month + 1, 0).getDate()
     const monthName = new Date(year, month, 1).toLocaleString('default', { month: 'long', year: 'numeric' })
@@ -30,9 +44,15 @@ function MonthGrid({ year, month, selectedDates, onToggleDate, mode, startDate, 
         const dateStr = formatDate(day)
         const selectable = isSelectable(dateStr)
         const isSelected = selectedDates.includes(dateStr)
+        const availableCount = availabilityCounts[dateStr] || 0
+        const availabilityTitle = `${availableCount} of ${availabilityTotal} other confirmed attendees are available on this day.`
 
         let className = 'day-cell'
         let style = { touchAction: 'manipulation' }
+
+        if (showAvailabilityCounts) {
+            style = { ...style, flexDirection: 'column' }
+        }
 
         if (!selectable) {
             style = { ...style, opacity: 0.15, cursor: 'default' }
@@ -45,6 +65,7 @@ function MonthGrid({ year, month, selectedDates, onToggleDate, mode, startDate, 
                 key={dateStr}
                 className={className}
                 style={style}
+                title={showAvailabilityCounts && selectable ? availabilityTitle : undefined}
                 onPointerDown={(e) => {
                     if (selectable) {
                         e.preventDefault()
@@ -52,7 +73,23 @@ function MonthGrid({ year, month, selectedDates, onToggleDate, mode, startDate, 
                     }
                 }}
             >
-                {day}
+                {showAvailabilityCounts ? (
+                    <>
+                        <span style={{ lineHeight: 1.1 }}>{day}</span>
+                        {selectable && (
+                            <span style={{
+                                fontSize: '0.72rem',
+                                opacity: 0.85,
+                                marginTop: '0.15rem',
+                                lineHeight: 1
+                            }}>
+                                {availableCount}/{availabilityTotal}
+                            </span>
+                        )}
+                    </>
+                ) : (
+                    day
+                )}
             </div>
         )
     }
@@ -79,7 +116,17 @@ function MonthGrid({ year, month, selectedDates, onToggleDate, mode, startDate, 
     )
 }
 
-export default function Calendar({ selectedDates, onToggleDate, mode, startDate, endDate, blockedDates = [] }) {
+function Calendar({
+    selectedDates,
+    onToggleDate,
+    mode,
+    startDate,
+    endDate,
+    blockedDates = [],
+    showAvailabilityCounts = false,
+    availabilityCounts = {},
+    availabilityTotal = 0
+}) {
     const getMonthsInRange = () => {
         if (!startDate || !endDate) {
             const now = new Date()
@@ -116,8 +163,13 @@ export default function Calendar({ selectedDates, onToggleDate, mode, startDate,
                     startDate={startDate}
                     endDate={endDate}
                     blockedDates={blockedDates}
+                    showAvailabilityCounts={showAvailabilityCounts}
+                    availabilityCounts={availabilityCounts}
+                    availabilityTotal={availabilityTotal}
                 />
             ))}
         </div>
     )
 }
+
+export default memo(Calendar)

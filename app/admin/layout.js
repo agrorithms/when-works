@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, createContext, useContext } from 'react'
+import { useState, createContext, useContext } from 'react'
 import Link from 'next/link'
 
 const AdminContext = createContext(null)
@@ -10,20 +10,14 @@ export function useAdmin() {
 }
 
 export default function AdminLayout({ children }) {
-    const [authenticated, setAuthenticated] = useState(false)
-    const [checking, setChecking] = useState(true)
+    const [authenticated, setAuthenticated] = useState(() => {
+        if (typeof window === 'undefined') return false
+        return sessionStorage.getItem('admin_auth') === 'true'
+    })
     const [password, setPassword] = useState('')
     const [authError, setAuthError] = useState('')
 
     const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || 'changeme'
-
-    useEffect(() => {
-        const stored = sessionStorage.getItem('admin_auth')
-        if (stored === 'true') {
-            setAuthenticated(true)
-        }
-        setChecking(false)
-    }, [])
 
     const handleLogin = () => {
         if (password === ADMIN_PASSWORD) {
@@ -33,14 +27,6 @@ export default function AdminLayout({ children }) {
         } else {
             setAuthError('Wrong password.')
         }
-    }
-
-    if (checking) {
-        return (
-            <div className="container" style={{ textAlign: 'center', paddingTop: '4rem' }}>
-                <h2>Loading...</h2>
-            </div>
-        )
     }
 
     if (!authenticated) {

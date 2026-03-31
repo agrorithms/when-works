@@ -17,7 +17,11 @@ export default function EventRespondPage() {
     const [eventLoading, setEventLoading] = useState(true)
     const [eventNotFound, setEventNotFound] = useState(false)
 
-    const [name, setName] = useState('')
+    const [name, setName] = useState(() => {
+        if (typeof window === 'undefined') return ''
+        return localStorage.getItem(NAME_STORAGE_KEY) || ''
+    })
+    const [includesSO, setIncludesSO] = useState(false)
     const [mode, setMode] = useState('available')
     const [confirmed, setConfirmed] = useState(false)
     const [loading, setLoading] = useState(false)
@@ -26,6 +30,7 @@ export default function EventRespondPage() {
     const [sessionStarted, setSessionStarted] = useState(false)
     const [sessionLoading, setSessionLoading] = useState(false)
     const [responseCount, setResponseCount] = useState(0)
+    const [confirmedResponses, setConfirmedResponses] = useState([])
     const [displayName, setDisplayName] = useState('')
 
     const [availableDates, setAvailableDates] = useState([])
@@ -33,10 +38,12 @@ export default function EventRespondPage() {
 
     const availableDatesRef = useRef([])
     const unavailableDatesRef = useRef([])
+    const nameRef = useRef('')
     const savedModeRef = useRef('available')
     const responseIdRef = useRef(null)
     const saveTimeout = useRef(null)
     const nameTimeout = useRef(null)
+    const includesSOTimeout = useRef(null)
     const sessionStarting = useRef(false)
     const eventRef = useRef(null)
     const isSaving = useRef(false)
@@ -48,18 +55,12 @@ export default function EventRespondPage() {
     const [pendingDate, setPendingDate] = useState(null)
 
     const selectedDates = mode === 'available' ? availableDates : unavailableDates
+    const getAttendeeWeight = (response) => response.includes_so ? 2 : 1
 
     useEffect(() => { availableDatesRef.current = availableDates }, [availableDates])
     useEffect(() => { unavailableDatesRef.current = unavailableDates }, [unavailableDates])
     useEffect(() => { responseIdRef.current = responseId }, [responseId])
-
-    // Load saved name
-    useEffect(() => {
-        const savedName = localStorage.getItem(NAME_STORAGE_KEY)
-        if (savedName) {
-            setName(savedName)
-        }
-    }, [])
+    useEffect(() => { nameRef.current = name }, [name])
 
     // Fetch event
     useEffect(() => {
@@ -76,41 +77,29 @@ export default function EventRespondPage() {
                 setEvent(data[0])
                 eventRef.current = data[0]
 
-                const { count } = await supabase
+                const { data: responderRows } = await supabase
                     .from('responses')
-                    .select('*', { count: 'exact', head: true })
+                    .select('includes_so')
                     .eq('event_id', data[0].id)
-                setResponseCount(count || 0)
+                const attendeeCount = (responderRows || []).reduce((sum, r) => sum + getAttendeeWeight(r), 0)
+                setResponseCount(attendeeCount)
+
+                if (data[0].show_availability_counts) {
+                    const { data: confirmedData } = await supabase
+                        .from('responses')
+                        .select('id, response_type, dates, includes_so')
+                        .eq('event_id', data[0].id)
+                        .eq('confirmed', true)
+                    setConfirmedResponses(confirmedData || [])
+                } else {
+                    setConfirmedResponses([])
+                }
             }
             setEventLoading(false)
         }
 
         fetchEvent()
     }, [slug])
-
-    // Auto-start session
-    useEffect(() => {
-        if (!event || sessionStarted || sessionStarting.current) return
-
-        const sessionName = localStorage.getItem(getSessionKey(slug))
-        if (sessionName) {
-            startSession(null, sessionName)
-            return
-        }
-
-        const savedName = localStorage.getItem(NAME_STORAGE_KEY)
-        if (savedName) {
-            startSession(savedName)
-        }
-    }, [event])
-
-    // Process pending date
-    useEffect(() => {
-        if (sessionStarted && pendingDate) {
-            processDateToggle(pendingDate)
-            setPendingDate(null)
-        }
-    }, [sessionStarted, pendingDate])
 
     // Debounced name save — updates DB when name changes while session is active
     useEffect(() => {
@@ -151,7 +140,36 @@ export default function EventRespondPage() {
         return () => {
             if (nameTimeout.current) clearTimeout(nameTimeout.current)
         }
-    }, [name, sessionStarted])
+    }, [name, sessionStarted, displayName, slug])
+
+    useEffect(() => {
+        if (!responseIdRef.current || !sessionStarted) return
+
+        if (includesSOTimeout.current) clearTimeout(includesSOTimeout.current)
+
+        includesSOTimeout.current = setTimeout(async () => {
+            const currentResponseId = responseIdRef.current
+            if (!currentResponseId) return
+
+            await supabase
+                .from('responses')
+                .update({ includes_so: includesSO })
+                .eq('id', currentResponseId)
+
+            if (eventRef.current) {
+                const { data: responderRows } = await supabase
+                    .from('responses')
+                    .select('includes_so')
+                    .eq('event_id', eventRef.current.id)
+                const attendeeCount = (responderRows || []).reduce((sum, r) => sum + getAttendeeWeight(r), 0)
+                setResponseCount(attendeeCount)
+            }
+        }, 600)
+
+        return () => {
+            if (includesSOTimeout.current) clearTimeout(includesSOTimeout.current)
+        }
+    }, [includesSO, sessionStarted])
 
     const scheduleSave = useCallback(() => {
         if (saveTimeout.current) clearTimeout(saveTimeout.current)
@@ -235,6 +253,7 @@ export default function EventRespondPage() {
                 savedModeRef.current = prev.response_type
                 setConfirmed(prev.confirmed)
                 setDisplayName(prev.display_name)
+                setIncludesSO(Boolean(prev.includes_so))
 
                 if (!prev.name.startsWith('guest_')) {
                     setName(prev.display_name)
@@ -261,7 +280,7 @@ export default function EventRespondPage() {
             }
         }
 
-        const trimmedName = (sessionDisplayName || name).trim()
+        const trimmedName = (sessionDisplayName || nameRef.current).trim()
         const guestNumber = await getNextGuestNumber(currentEvent.id)
         const finalDisplayName = trimmedName || `Guest #${guestNumber}`
         const finalInternalName = trimmedName ? trimmedName.toLowerCase() : `guest_${guestNumber}`
@@ -271,6 +290,7 @@ export default function EventRespondPage() {
             .insert({
                 name: finalInternalName,
                 display_name: finalDisplayName,
+                includes_so: includesSO,
                 response_type: 'available',
                 dates: [],
                 confirmed: false,
@@ -289,7 +309,7 @@ export default function EventRespondPage() {
         setResponseId(data[0].id)
         responseIdRef.current = data[0].id
         setDisplayName(finalDisplayName)
-        setResponseCount(prev => prev + 1)
+        setResponseCount(prev => prev + getAttendeeWeight({ includes_so: includesSO }))
 
         localStorage.setItem(getSessionKey(slug), finalInternalName)
         if (trimmedName) {
@@ -299,7 +319,7 @@ export default function EventRespondPage() {
         setSessionStarted(true)
         setSessionLoading(false)
         sessionStarting.current = false
-    }, [name, slug])
+    }, [includesSO, slug])
 
     const processDateToggle = useCallback((dateStr) => {
         setHasMadeSelection(true)
@@ -331,7 +351,7 @@ export default function EventRespondPage() {
     const toggleDate = useCallback((dateStr) => {
         if (!sessionStarted && !sessionStarting.current) {
             setPendingDate(dateStr)
-            startSession(name.trim() || null)
+            startSession(nameRef.current.trim() || null)
             return
         }
 
@@ -341,7 +361,38 @@ export default function EventRespondPage() {
         }
 
         processDateToggle(dateStr)
-    }, [sessionStarted, sessionLoading, name, startSession, processDateToggle])
+    }, [sessionStarted, sessionLoading, startSession, processDateToggle])
+
+    // Auto-start session
+    useEffect(() => {
+        if (!event || sessionStarted || sessionStarting.current) return
+
+        const timeoutId = setTimeout(() => {
+            const sessionName = localStorage.getItem(getSessionKey(slug))
+            if (sessionName) {
+                startSession(null, sessionName)
+                return
+            }
+
+            const savedName = localStorage.getItem(NAME_STORAGE_KEY)
+            if (savedName) {
+                startSession(savedName)
+            }
+        }, 0)
+
+        return () => clearTimeout(timeoutId)
+    }, [event, sessionStarted, slug, startSession])
+
+    // Process pending date
+    useEffect(() => {
+        if (sessionStarted && pendingDate) {
+            const timeoutId = setTimeout(() => {
+                processDateToggle(pendingDate)
+                setPendingDate(null)
+            }, 0)
+            return () => clearTimeout(timeoutId)
+        }
+    }, [sessionStarted, pendingDate, processDateToggle])
 
     const handleModeChange = () => {
         const newMode = mode === 'available' ? 'unavailable' : 'available'
@@ -360,6 +411,7 @@ export default function EventRespondPage() {
 
         if (saveTimeout.current) clearTimeout(saveTimeout.current)
         if (nameTimeout.current) clearTimeout(nameTimeout.current)
+        if (includesSOTimeout.current) clearTimeout(includesSOTimeout.current)
 
         setLoading(true)
         setError('')
@@ -367,6 +419,7 @@ export default function EventRespondPage() {
         const trimmedName = name.trim()
 
         const updateData = {
+            includes_so: includesSO,
             response_type: mode,
             dates: datesToConfirm.sort(),
             confirmed: true
@@ -390,6 +443,14 @@ export default function EventRespondPage() {
         } else {
             setConfirmed(true)
             savedModeRef.current = mode
+            if (event?.show_availability_counts) {
+                const { data: confirmedData } = await supabase
+                    .from('responses')
+                    .select('id, response_type, dates, includes_so')
+                    .eq('event_id', event.id)
+                    .eq('confirmed', true)
+                setConfirmedResponses(confirmedData || [])
+            }
         }
 
         setLoading(false)
@@ -398,6 +459,7 @@ export default function EventRespondPage() {
     const handleReset = () => {
         if (saveTimeout.current) clearTimeout(saveTimeout.current)
         if (nameTimeout.current) clearTimeout(nameTimeout.current)
+        if (includesSOTimeout.current) clearTimeout(includesSOTimeout.current)
         setSessionStarted(false)
         setResponseId(null)
         responseIdRef.current = null
@@ -408,6 +470,7 @@ export default function EventRespondPage() {
         setHasMadeSelection(false)
         setConfirmed(false)
         setName('')
+        setIncludesSO(false)
         setDisplayName('')
         setMode('available')
         setSaveStatus('idle')
@@ -442,6 +505,29 @@ export default function EventRespondPage() {
     }
 
     const daysLeft = getDaysUntilDeadline()
+    const otherConfirmedResponses = confirmedResponses.filter(r => r.id !== responseId)
+    const availabilityTotal = otherConfirmedResponses.reduce((sum, r) => sum + getAttendeeWeight(r), 0)
+    const availabilityCounts = {}
+
+    if (event?.show_availability_counts && event?.date_range_start && event?.date_range_end) {
+        const start = new Date(event.date_range_start + 'T12:00:00')
+        const end = new Date(event.date_range_end + 'T12:00:00')
+        const blocked = event.blocked_dates || []
+
+        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+            const dateStr = d.toISOString().split('T')[0]
+            if (blocked.includes(dateStr)) continue
+
+            let availableCount = 0
+            for (const r of otherConfirmedResponses) {
+                const dates = r.dates || []
+                const hasDate = dates.includes(dateStr)
+                const isAvailable = r.response_type === 'available' ? hasDate : !hasDate
+                if (isAvailable) availableCount += getAttendeeWeight(r)
+            }
+            availabilityCounts[dateStr] = availableCount
+        }
+    }
 
     if (eventLoading) {
         return (
@@ -477,6 +563,11 @@ export default function EventRespondPage() {
                 <p style={{ color: '#94a3b8', marginTop: '0.5rem', fontSize: '0.9rem' }}>
                     Responding as: <strong>{name.trim() || displayName}</strong>
                 </p>
+                {includesSO && (
+                    <p style={{ color: '#94a3b8', marginTop: '0.25rem', fontSize: '0.9rem' }}>
+                        👥 Submitted for both you and your SO
+                    </p>
+                )}
 
                 {isEmptySubmission ? (
                     <p style={{ color: '#94a3b8', marginTop: '0.5rem' }}>
@@ -541,10 +632,39 @@ export default function EventRespondPage() {
                         color: '#c7d2fe', padding: '0.5rem 0.75rem', borderRadius: '8px',
                         fontSize: '0.8rem', fontWeight: 600
                     }}>
-                        👥 {responseCount} responded
+                        👥 {responseCount - 1} responded
                     </div>
                 </div>
             </div>
+
+            <label style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '0.75rem',
+                cursor: 'pointer',
+                padding: '0.75rem',
+                borderRadius: '10px',
+                background: '#1e293b',
+                border: '2px solid #334155',
+                marginBottom: '1rem'
+            }}>
+                <input
+                    type="checkbox"
+                    checked={includesSO}
+                    onChange={(e) => setIncludesSO(e.target.checked)}
+                    style={{
+                        width: '20px',
+                        height: '20px',
+                        marginTop: '2px',
+                        accentColor: '#6366f1',
+                        cursor: 'pointer',
+                        flexShrink: 0
+                    }}
+                />
+                <span style={{ color: '#e2e8f0', fontSize: '0.9rem' }}>
+                    I&apos;m submitting for me and my SO
+                </span>
+            </label>
 
             {/* Name field — always editable */}
             <div style={{
@@ -611,10 +731,7 @@ export default function EventRespondPage() {
 
             {/* Clickable mode banner */}
             <div
-                onPointerDown={(e) => {
-                    e.preventDefault()
-                    handleModeChange()
-                }}
+                onClick={handleModeChange}
                 style={{
                     background: mode === 'available' ? '#065f46' : '#7f1d1d',
                     border: mode === 'available' ? '2px solid #10b981' : '2px solid #ef4444',
@@ -655,6 +772,18 @@ export default function EventRespondPage() {
                 </p>
             )}
 
+            {event.show_availability_counts && (
+                <p style={{
+                    color: '#94a3b8',
+                    fontSize: '0.8rem',
+                    marginBottom: '0.75rem',
+                    textAlign: 'center'
+                }}>
+                    Dates now show available/responded counts, so you can see which days are already popular
+                    ({availabilityTotal} other confirmed so far).
+                </p>
+            )}
+
             {/* Calendar */}
             <Calendar
                 selectedDates={selectedDates}
@@ -663,6 +792,9 @@ export default function EventRespondPage() {
                 startDate={event.date_range_start}
                 endDate={event.date_range_end}
                 blockedDates={event.blocked_dates || []}
+                showAvailabilityCounts={event.show_availability_counts}
+                availabilityCounts={availabilityCounts}
+                availabilityTotal={availabilityTotal}
             />
 
             {/* Empty submission confirmation */}

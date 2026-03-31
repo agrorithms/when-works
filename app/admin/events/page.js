@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../../../lib/supabase'
 import Link from 'next/link'
 
@@ -9,13 +9,7 @@ export default function EventsListPage() {
     const [responses, setResponses] = useState([])
     const [loading, setLoading] = useState(true)
 
-    useEffect(() => {
-        fetchData()
-    }, [])
-
-    const fetchData = async () => {
-        setLoading(true)
-
+    const fetchData = useCallback(async () => {
         const { data: eventsData } = await supabase
             .from('events')
             .select('*')
@@ -23,11 +17,21 @@ export default function EventsListPage() {
 
         const { data: responsesData } = await supabase
             .from('responses')
-            .select('id, event_id, confirmed')
+            .select('id, event_id, confirmed, includes_so')
 
         setEvents(eventsData || [])
         setResponses(responsesData || [])
         setLoading(false)
+    }, [])
+
+    useEffect(() => {
+        const timeoutId = setTimeout(fetchData, 0)
+        return () => clearTimeout(timeoutId)
+    }, [fetchData])
+
+    const handleRefresh = () => {
+        setLoading(true)
+        fetchData()
     }
 
     const getShareUrl = (slug) => {
@@ -40,6 +44,8 @@ export default function EventsListPage() {
     const copyLink = (slug) => {
         navigator.clipboard.writeText(getShareUrl(slug))
     }
+
+    const getAttendeeWeight = (response) => response.includes_so ? 2 : 1
 
     if (loading) {
         return (
@@ -56,7 +62,7 @@ export default function EventsListPage() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' }}>
                 <h1>📋 Your Events</h1>
                 <button
-                    onClick={fetchData}
+                    onClick={handleRefresh}
                     style={{
                         background: '#334155', color: '#e2e8f0', border: 'none',
                         padding: '0.5rem 1rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem'
@@ -78,8 +84,11 @@ export default function EventsListPage() {
             ) : (
                 events.map(event => {
                     const eventResponses = responses.filter(r => r.event_id === event.id)
-                    const confirmedCount = eventResponses.filter(r => r.confirmed).length
-                    const totalResponses = eventResponses.length
+                    const confirmedAttendees = eventResponses
+                        .filter(r => r.confirmed)
+                        .reduce((sum, r) => sum + getAttendeeWeight(r), 0)
+                    const totalAttendees = eventResponses
+                        .reduce((sum, r) => sum + getAttendeeWeight(r), 0)
 
                     return (
                         <Link
@@ -111,7 +120,7 @@ export default function EventsListPage() {
                                             background: '#1e3a2f', padding: '0.3rem 0.6rem',
                                             borderRadius: '6px', fontSize: '0.8rem', color: '#94a3b8'
                                         }}>
-                                            {confirmedCount}/{totalResponses} confirmed
+                                            {confirmedAttendees}/{totalAttendees} attendees
                                         </div>
                                     </div>
                                 </div>

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useParams } from 'next/navigation'
 import { supabase } from '../../../../lib/supabase'
 import Link from 'next/link'
@@ -19,13 +19,7 @@ export default function EventDetailPage() {
     const [tab, setTab] = useState('overview')
     const [showUnconfirmed, setShowUnconfirmed] = useState(false)
 
-    useEffect(() => {
-        fetchData()
-    }, [eventId])
-
-    const fetchData = async () => {
-        setLoading(true)
-
+    const fetchData = useCallback(async () => {
         const { data: eventData, error: eventError } = await supabase
             .from('events')
             .select('*')
@@ -47,6 +41,16 @@ export default function EventDetailPage() {
         setEvent(eventData[0])
         setResponses(responsesData || [])
         setLoading(false)
+    }, [eventId])
+
+    useEffect(() => {
+        const timeoutId = setTimeout(fetchData, 0)
+        return () => clearTimeout(timeoutId)
+    }, [fetchData])
+
+    const handleRefresh = () => {
+        setLoading(true)
+        fetchData()
     }
 
     const getShareUrl = (slug) => {
@@ -66,22 +70,38 @@ export default function EventDetailPage() {
         return showUnconfirmed ? responses : responses.filter(r => r.confirmed)
     }
 
+    const getAttendeeWeight = (response) => response.includes_so ? 2 : 1
+
     const getAvailabilityForDate = (dateStr) => {
         const filtered = getFilteredResponses()
         const available = []
         const unavailable = []
+        let availableCount = 0
+        let unavailableCount = 0
 
         filtered.forEach(r => {
+            const weight = getAttendeeWeight(r)
+            const label = r.includes_so ? `${r.display_name} (+SO)` : r.display_name
             if (r.response_type === 'available') {
-                if (r.dates.includes(dateStr)) available.push(r.display_name)
-                else unavailable.push(r.display_name)
+                if (r.dates.includes(dateStr)) {
+                    available.push(label)
+                    availableCount += weight
+                } else {
+                    unavailable.push(label)
+                    unavailableCount += weight
+                }
             } else {
-                if (r.dates.includes(dateStr)) unavailable.push(r.display_name)
-                else available.push(r.display_name)
+                if (r.dates.includes(dateStr)) {
+                    unavailable.push(label)
+                    unavailableCount += weight
+                } else {
+                    available.push(label)
+                    availableCount += weight
+                }
             }
         })
 
-        return { available, unavailable }
+        return { available, unavailable, availableCount, unavailableCount }
     }
 
     const getMonthsInRange = () => {
@@ -105,7 +125,7 @@ export default function EventDetailPage() {
     const getBestDates = () => {
         if (!event) return []
         const filtered = getFilteredResponses()
-        const totalPeople = filtered.length
+        const totalAttendees = filtered.reduce((sum, r) => sum + getAttendeeWeight(r), 0)
         const results = []
 
         const start = new Date(event.date_range_start + 'T12:00:00')
@@ -116,8 +136,8 @@ export default function EventDetailPage() {
             const dateStr = d.toISOString().split('T')[0]
             if (blocked.includes(dateStr)) continue
 
-            const { available } = getAvailabilityForDate(dateStr)
-            results.push({ date: dateStr, count: available.length, available, totalPeople })
+            const { available, availableCount } = getAvailabilityForDate(dateStr)
+            results.push({ date: dateStr, count: availableCount, available, totalAttendees })
         }
 
         return results.sort((a, b) => b.count - a.count)
@@ -160,9 +180,9 @@ export default function EventDetailPage() {
     }
 
     const filteredResponses = getFilteredResponses()
-    const totalPeople = filteredResponses.length
-    const confirmedCount = responses.filter(r => r.confirmed).length
-    const unconfirmedCount = responses.filter(r => !r.confirmed).length
+    const totalPeople = filteredResponses.reduce((sum, r) => sum + getAttendeeWeight(r), 0)
+    const confirmedCount = responses.filter(r => r.confirmed).reduce((sum, r) => sum + getAttendeeWeight(r), 0)
+    const unconfirmedCount = responses.filter(r => !r.confirmed).reduce((sum, r) => sum + getAttendeeWeight(r), 0)
     const months = getMonthsInRange()
 
     return (
@@ -173,7 +193,7 @@ export default function EventDetailPage() {
             {event.description && (
                 <p style={{ color: '#94a3b8', marginBottom: '0.5rem' }}>{event.description}</p>
             )}
-            <h2>{confirmedCount} confirmed, {unconfirmedCount} in progress</h2>
+            <h2>{confirmedCount} confirmed attendees, {unconfirmedCount} in-progress attendees</h2>
 
             {/* Share link */}
             <div style={{
@@ -203,7 +223,7 @@ export default function EventDetailPage() {
             {/* Controls */}
             <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
                 <button
-                    onClick={fetchData}
+                    onClick={handleRefresh}
                     style={{
                         background: '#334155', color: '#e2e8f0', border: 'none',
                         padding: '0.5rem 1rem', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem'
@@ -313,8 +333,8 @@ export default function EventDetailPage() {
                                                     )
                                                 }
 
-                                                const { available } = getAvailabilityForDate(dateStr)
-                                                const count = available.length
+                                                const { available, availableCount } = getAvailabilityForDate(dateStr)
+                                                const count = availableCount
 
                                                 let className = 'admin-day '
                                                 if (count === totalPeople && totalPeople > 0) className += 'all-available'
@@ -350,6 +370,16 @@ export default function EventDetailPage() {
                                 <div key={r.id} className="person-card">
                                     <h3>
                                         {r.display_name}
+                                        {r.includes_so && (
+                                            <span style={{
+                                                fontSize: '0.72rem',
+                                                fontWeight: 500,
+                                                marginLeft: '0.5rem',
+                                                color: '#93c5fd'
+                                            }}>
+                                                + SO
+                                            </span>
+                                        )}
                                         <span style={{
                                             fontSize: '0.75rem', fontWeight: 400, marginLeft: '0.5rem',
                                             color: r.confirmed ? '#10b981' : '#f59e0b'
@@ -400,13 +430,13 @@ export default function EventDetailPage() {
                                         </div>
                                     </div>
                                     <div style={{
-                                        background: d.count === d.totalPeople ? '#065f46' : '#1e3a2f',
-                                        border: d.count === d.totalPeople ? '2px solid #10b981' : 'none',
+                                        background: d.count === d.totalAttendees ? '#065f46' : '#1e3a2f',
+                                        border: d.count === d.totalAttendees ? '2px solid #10b981' : 'none',
                                         padding: '0.4rem 0.8rem', borderRadius: '8px',
                                         fontWeight: 600, fontSize: '0.9rem',
-                                        color: d.count === d.totalPeople ? '#a7f3d0' : '#94a3b8'
+                                        color: d.count === d.totalAttendees ? '#a7f3d0' : '#94a3b8'
                                     }}>
-                                        {d.count}/{d.totalPeople}
+                                        {d.count}/{d.totalAttendees}
                                     </div>
                                 </div>
                             ))}
@@ -422,4 +452,3 @@ export default function EventDetailPage() {
         </div>
     )
 }
-
