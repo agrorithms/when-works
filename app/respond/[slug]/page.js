@@ -28,7 +28,6 @@ export default function EventRespondPage() {
     const [error, setError] = useState('')
     const [responseId, setResponseId] = useState(null)
     const [sessionStarted, setSessionStarted] = useState(false)
-    const [sessionLoading, setSessionLoading] = useState(false)
     const [responseCount, setResponseCount] = useState(0)
     const [confirmedResponses, setConfirmedResponses] = useState([])
     const [displayName, setDisplayName] = useState('')
@@ -47,12 +46,12 @@ export default function EventRespondPage() {
     const sessionStarting = useRef(false)
     const eventRef = useRef(null)
     const isSaving = useRef(false)
+    const pendingTogglesRef = useRef([])
 
     const [saveStatus, setSaveStatus] = useState('idle')
     const [hasMadeSelection, setHasMadeSelection] = useState(false)
     const [showEmptyConfirm, setShowEmptyConfirm] = useState(false)
     const [emptyConfirmChecked, setEmptyConfirmChecked] = useState(false)
-    const [pendingDate, setPendingDate] = useState(null)
 
     const selectedDates = mode === 'available' ? availableDates : unavailableDates
     const getAttendeeWeight = (response) => response.includes_so ? 2 : 1
@@ -226,12 +225,17 @@ export default function EventRespondPage() {
         return guestNumbers.length > 0 ? Math.max(...guestNumbers) + 1 : 1
     }
 
+    const applyDateToggle = (dates, dateStr) => {
+        return dates.includes(dateStr)
+            ? dates.filter(d => d !== dateStr)
+            : [...dates, dateStr]
+    }
+
     const startSession = useCallback(async (sessionDisplayName, sessionInternalName) => {
         if (sessionStarting.current) return
         if (!eventRef.current) return
 
         sessionStarting.current = true
-        setSessionLoading(true)
         setError('')
 
         const currentEvent = eventRef.current
@@ -249,8 +253,9 @@ export default function EventRespondPage() {
                 const prev = existing[0]
                 setResponseId(prev.id)
                 responseIdRef.current = prev.id
-                setMode(prev.response_type)
-                savedModeRef.current = prev.response_type
+                if (pendingTogglesRef.current.length === 0) {
+                    setMode(prev.response_type)
+                }
                 setConfirmed(prev.confirmed)
                 setDisplayName(prev.display_name)
                 setIncludesSO(Boolean(prev.includes_so))
@@ -259,22 +264,29 @@ export default function EventRespondPage() {
                     setName(prev.display_name)
                 }
 
-                if (prev.response_type === 'available') {
-                    setAvailableDates(prev.dates || [])
-                    availableDatesRef.current = prev.dates || []
-                    setUnavailableDates([])
-                    unavailableDatesRef.current = []
-                } else {
-                    setUnavailableDates(prev.dates || [])
-                    unavailableDatesRef.current = prev.dates || []
-                    setAvailableDates([])
-                    availableDatesRef.current = []
+                let nextAvailableDates = prev.response_type === 'available' ? (prev.dates || []) : []
+                let nextUnavailableDates = prev.response_type === 'unavailable' ? (prev.dates || []) : []
+
+                if (pendingTogglesRef.current.length > 0) {
+                    for (const { dateStr, toggleMode } of pendingTogglesRef.current) {
+                        if (toggleMode === 'available') {
+                            nextAvailableDates = applyDateToggle(nextAvailableDates, dateStr)
+                        } else {
+                            nextUnavailableDates = applyDateToggle(nextUnavailableDates, dateStr)
+                        }
+                    }
                 }
+
+                setAvailableDates(nextAvailableDates)
+                availableDatesRef.current = nextAvailableDates
+                setUnavailableDates(nextUnavailableDates)
+                unavailableDatesRef.current = nextUnavailableDates
 
                 localStorage.setItem(getSessionKey(slug), prev.name)
 
                 setSessionStarted(true)
-                setSessionLoading(false)
+                pendingTogglesRef.current = []
+                scheduleSave()
                 sessionStarting.current = false
                 return
             }
@@ -302,7 +314,6 @@ export default function EventRespondPage() {
             setError('Something went wrong. Please try again.')
             console.error(insertError)
             sessionStarting.current = false
-            setSessionLoading(false)
             return
         }
 
@@ -317,9 +328,12 @@ export default function EventRespondPage() {
         }
 
         setSessionStarted(true)
-        setSessionLoading(false)
+        if (pendingTogglesRef.current.length > 0) {
+            pendingTogglesRef.current = []
+            scheduleSave()
+        }
         sessionStarting.current = false
-    }, [includesSO, slug])
+    }, [includesSO, scheduleSave, slug])
 
     const processDateToggle = useCallback((dateStr) => {
         setHasMadeSelection(true)
@@ -353,19 +367,15 @@ export default function EventRespondPage() {
             document.activeElement.blur()
         }
 
-        if (!sessionStarted && !sessionStarting.current) {
-            setPendingDate(dateStr)
-            startSession(nameRef.current.trim() || null)
-            return
-        }
-
-        if (sessionLoading) {
-            setPendingDate(dateStr)
-            return
+        if (!sessionStarted) {
+            pendingTogglesRef.current.push({ dateStr, toggleMode: mode })
+            if (!sessionStarting.current) {
+                startSession(nameRef.current.trim() || null)
+            }
         }
 
         processDateToggle(dateStr)
-    }, [sessionStarted, sessionLoading, startSession, processDateToggle])
+    }, [mode, sessionStarted, startSession, processDateToggle])
 
     // Auto-start session
     useEffect(() => {
@@ -386,17 +396,6 @@ export default function EventRespondPage() {
 
         return () => clearTimeout(timeoutId)
     }, [event, sessionStarted, slug, startSession])
-
-    // Process pending date
-    useEffect(() => {
-        if (sessionStarted && pendingDate) {
-            const timeoutId = setTimeout(() => {
-                processDateToggle(pendingDate)
-                setPendingDate(null)
-            }, 0)
-            return () => clearTimeout(timeoutId)
-        }
-    }, [sessionStarted, pendingDate, processDateToggle])
 
     const handleModeChange = () => {
         const newMode = mode === 'available' ? 'unavailable' : 'available'
@@ -608,8 +607,8 @@ export default function EventRespondPage() {
         <div className="container">
             {/* Header */}
             <div style={{
-                background: '#1e293b', borderRadius: '10px', padding: '1rem',
-                marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between',
+                background: '#1e293b', borderRadius: '10px', padding: '0.65rem 1rem',
+                marginBottom: '1.1rem', display: 'flex', justifyContent: 'space-between',
                 alignItems: 'center', flexWrap: 'wrap', gap: '1rem'
             }}>
                 <div>
@@ -619,61 +618,32 @@ export default function EventRespondPage() {
                     )}
                 </div>
 
-                <div style={{ textAlign: 'right' }}>
+                <div style={{ textAlign: 'center' }}>
                     {daysLeft !== null && (
                         <div style={{
                             background: daysLeft <= 2 ? '#7f1d1d' : '#1e3a2f',
                             border: daysLeft <= 2 ? '2px solid #ef4444' : '2px solid #10b981',
                             color: daysLeft <= 2 ? '#fca5a5' : '#a7f3d0',
-                            padding: '0.5rem 0.75rem', borderRadius: '8px',
-                            fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.5rem'
+                            padding: '0.3rem 0.75rem', borderRadius: '8px',
+                            fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.3rem'
                         }}>
                             {daysLeft === 0 ? '⏰ Due today!' : `⏰ ${daysLeft} day${daysLeft !== 1 ? 's' : ''} left`}
                         </div>
                     )}
                     <div style={{
                         background: '#312e81', border: '2px solid #6366f1',
-                        color: '#c7d2fe', padding: '0.5rem 0.75rem', borderRadius: '8px',
+                        color: '#c7d2fe', padding: '0.3rem 0.75rem', borderRadius: '8px',
                         fontSize: '0.8rem', fontWeight: 600
                     }}>
-                        👥 {responseCount - 1} responded
+                        👥 {availabilityTotal} responded
                     </div>
                 </div>
             </div>
 
-            <label style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: '0.75rem',
-                cursor: 'pointer',
-                padding: '0.75rem',
-                borderRadius: '10px',
-                background: '#1e293b',
-                border: '2px solid #334155',
-                marginBottom: '1rem'
-            }}>
-                <input
-                    type="checkbox"
-                    checked={includesSO}
-                    onChange={(e) => setIncludesSO(e.target.checked)}
-                    style={{
-                        width: '20px',
-                        height: '20px',
-                        marginTop: '2px',
-                        accentColor: '#6366f1',
-                        cursor: 'pointer',
-                        flexShrink: 0
-                    }}
-                />
-                <span style={{ color: '#e2e8f0', fontSize: '0.9rem' }}>
-                    I&apos;m submitting for me and my SO
-                </span>
-            </label>
-
             {/* Name field — always editable */}
             <div style={{
                 display: 'flex', alignItems: 'center', gap: '0.75rem',
-                marginBottom: '1rem'
+                marginBottom: '0.9rem',
             }}>
                 <div style={{ flex: 1 }}>
                     <input
@@ -713,58 +683,96 @@ export default function EventRespondPage() {
                 )}
             </div>
 
-            {sessionLoading && (
-                <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '1rem' }}>
-                    Loading your session...
-                </p>
-            )}
-
-            {error && <p style={{ color: '#ef4444', margin: '0 0 1rem 0' }}>{error}</p>}
-
-            {/* Mode description text */}
-            <p style={{
-                color: '#94a3b8',
-                fontSize: '0.85rem',
-                marginBottom: '0.5rem',
-                textAlign: 'center'
+            <div style={{
+                display: 'flex',
+                gap: '0.75rem',
+                flexWrap: 'wrap',
+                marginBottom: '.9rem'
             }}>
-                {mode === 'available'
-                    ? 'Click below if it would be easier to choose only dates you are NOT available'
-                    : 'Click below if it would be easier to choose only dates you ARE available'}
-            </p>
-
-            {/* Clickable mode banner */}
-            <div
-                onClick={handleModeChange}
-                style={{
-                    background: mode === 'available' ? '#065f46' : '#7f1d1d',
-                    border: mode === 'available' ? '2px solid #10b981' : '2px solid #ef4444',
-                    borderRadius: '10px',
-                    padding: '0.75rem 1rem',
-                    marginBottom: '1rem',
-                    textAlign: 'center',
+                <label style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.55rem',
                     cursor: 'pointer',
-                    transition: 'all 0.15s ease',
-                    userSelect: 'none',
-                    touchAction: 'manipulation'
-                }}
-            >
-                <p style={{
-                    color: mode === 'available' ? '#a7f3d0' : '#fca5a5',
-                    fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.25rem'
+                    padding: '0.42rem 0.85rem',
+                    borderRadius: '10px',
+                    background: '#1e293b',
+                    border: '2px solid #334155',
+                    flex: '1 1 260px',
+                    minHeight: '42px'
                 }}>
-                    {mode === 'available'
-                        ? '✅ Select the days you ARE available'
-                        : '❌ Select the days you are NOT available'}
-                </p>
-                <p style={{
-                    color: mode === 'available' ? '#6ee7b7' : '#fca5a5',
-                    fontSize: '0.8rem', opacity: 0.8
-                }}>
-                    {selectedDates.length} day{selectedDates.length !== 1 ? 's' : ''} selected
-                </p>
+                    <input
+                        type="checkbox"
+                        checked={includesSO}
+                        onChange={(e) => setIncludesSO(e.target.checked)}
+                        style={{
+                            width: '16px',
+                            height: '16px',
+                            accentColor: '#6366f1',
+                            cursor: 'pointer',
+                            flexShrink: 0
+                        }}
+                    />
+                    <span style={{ color: '#e2e8f0', fontSize: '0.9rem', lineHeight: 1.25 }}>
+                        I&apos;m submitting for me and my SO
+                    </span>
+                </label>
+
+                <button
+                    type="button"
+                    onClick={handleModeChange}
+                    aria-pressed={mode === 'unavailable'}
+                    style={{
+                        background: '#1e293b',
+                        border: mode === 'available' ? '2px solid #10b981' : '2px solid #ef4444',
+                        borderRadius: '10px',
+                        padding: '0.42rem 0.85rem',
+                        flex: '1 1 260px',
+                        minHeight: '42px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '0.75rem',
+                        textAlign: 'left',
+                        touchAction: 'manipulation'
+                    }}
+                >
+                    <div>
+                        <p style={{
+                            color: '#e2e8f0',
+                            fontSize: '0.85rem',
+                            fontWeight: 600
+                        }}>
+                            Select days you are {mode === 'available' ? 'available' : 'not available'}
+                        </p>
+                    </div>
+
+                    <span style={{
+                        width: '46px',
+                        height: '26px',
+                        borderRadius: '999px',
+                        background: mode === 'available' ? '#10b981' : '#ef4444',
+                        position: 'relative',
+                        transition: 'background 0.18s ease',
+                        flexShrink: 0
+                    }}>
+                        <span style={{
+                            position: 'absolute',
+                            top: '3px',
+                            left: mode === 'available' ? '23px' : '3px',
+                            width: '20px',
+                            height: '20px',
+                            borderRadius: '50%',
+                            background: '#ffffff',
+                            transition: 'left 0.18s ease',
+                            boxShadow: '0 1px 3px rgba(0, 0, 0, 0.3)'
+                        }} />
+                    </span>
+                </button>
             </div>
 
+            {error && <p style={{ color: '#ef4444', margin: '0 0 1rem 0' }}>{error}</p>}
 
             {otherModeDates.length > 0 && (
                 <p style={{
@@ -783,8 +791,7 @@ export default function EventRespondPage() {
                     marginBottom: '0.75rem',
                     textAlign: 'center'
                 }}>
-                    Dates now show available/responded counts, so you can see which days are already popular
-                    ({availabilityTotal} other confirmed so far).
+                    Dates show available/responded counts ({availabilityTotal} confirmed)
                 </p>
             )}
 
