@@ -52,6 +52,7 @@ export default function EventRespondPage() {
     const [hasMadeSelection, setHasMadeSelection] = useState(false)
     const [showEmptyConfirm, setShowEmptyConfirm] = useState(false)
     const [emptyConfirmChecked, setEmptyConfirmChecked] = useState(false)
+    const [resetSnapshot, setResetSnapshot] = useState(null)
 
     const selectedDates = mode === 'available' ? availableDates : unavailableDates
     const getAttendeeWeight = (response) => response.includes_so ? 2 : 1
@@ -336,6 +337,9 @@ export default function EventRespondPage() {
     }, [includesSO, scheduleSave, slug])
 
     const processDateToggle = useCallback((dateStr) => {
+        if (resetSnapshot) {
+            setResetSnapshot(null)
+        }
         setHasMadeSelection(true)
         savedModeRef.current = mode
         setShowEmptyConfirm(false)
@@ -360,7 +364,7 @@ export default function EventRespondPage() {
         }
 
         scheduleSave()
-    }, [mode, scheduleSave])
+    }, [mode, resetSnapshot, scheduleSave])
 
     const toggleDate = useCallback((dateStr) => {
         if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
@@ -460,26 +464,51 @@ export default function EventRespondPage() {
     }
 
     const handleReset = () => {
+        setResetSnapshot({
+            availableDates: [...availableDates],
+            unavailableDates: [...unavailableDates],
+            hasMadeSelection,
+            mode
+        })
+
         if (saveTimeout.current) clearTimeout(saveTimeout.current)
         if (nameTimeout.current) clearTimeout(nameTimeout.current)
         if (includesSOTimeout.current) clearTimeout(includesSOTimeout.current)
-        setSessionStarted(false)
-        setResponseId(null)
-        responseIdRef.current = null
+
+        savedModeRef.current = mode
         setAvailableDates([])
         setUnavailableDates([])
         availableDatesRef.current = []
         unavailableDatesRef.current = []
         setHasMadeSelection(false)
         setConfirmed(false)
-        setName('')
-        setIncludesSO(false)
-        setDisplayName('')
-        setMode('available')
+        setShowEmptyConfirm(false)
+        setEmptyConfirmChecked(false)
         setSaveStatus('idle')
-        localStorage.removeItem(NAME_STORAGE_KEY)
-        localStorage.removeItem(getSessionKey(slug))
-        sessionStarting.current = false
+        scheduleSave()
+    }
+
+    const handleUndoReset = () => {
+        if (!resetSnapshot) return
+
+        if (saveTimeout.current) clearTimeout(saveTimeout.current)
+        if (nameTimeout.current) clearTimeout(nameTimeout.current)
+        if (includesSOTimeout.current) clearTimeout(includesSOTimeout.current)
+
+        savedModeRef.current = resetSnapshot.mode
+        setMode(resetSnapshot.mode)
+        setAvailableDates(resetSnapshot.availableDates)
+        setUnavailableDates(resetSnapshot.unavailableDates)
+        availableDatesRef.current = [...resetSnapshot.availableDates]
+        unavailableDatesRef.current = [...resetSnapshot.unavailableDates]
+
+        setHasMadeSelection(resetSnapshot.hasMadeSelection)
+        setConfirmed(false)
+        setShowEmptyConfirm(false)
+        setEmptyConfirmChecked(false)
+        setSaveStatus('idle')
+        setResetSnapshot(null)
+        scheduleSave()
     }
 
     const getEmptyConfirmMessage = () => {
@@ -508,6 +537,7 @@ export default function EventRespondPage() {
     }
 
     const daysLeft = getDaysUntilDeadline()
+    const hasUndoOption = !!resetSnapshot
     const otherConfirmedResponses = confirmedResponses.filter(r => r.id !== responseId)
     const availabilityTotal = otherConfirmedResponses.reduce((sum, r) => sum + getAttendeeWeight(r), 0)
     const availabilityCounts = {}
@@ -656,30 +686,23 @@ export default function EventRespondPage() {
                     />
                 </div>
 
-                {sessionStarted && (
+                {(sessionStarted || hasUndoOption) && (
                     <button
-                        onClick={handleReset}
+                        onClick={hasUndoOption ? handleUndoReset : handleReset}
                         style={{
                             background: '#334155', color: '#94a3b8', border: 'none',
-                            padding: '0.5rem 0.75rem', borderRadius: '8px',
-                            cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap'
+                            minHeight: '42px',
+                            padding: '0.42rem 0.85rem',
+                            borderRadius: '10px',
+                            cursor: 'pointer',
+                            fontSize: '0.9rem',
+                            whiteSpace: 'nowrap',
+                            display: 'flex',
+                            alignItems: 'center'
                         }}
                     >
-                        Reset
+                        {hasUndoOption ? 'Undo' : 'Reset'}
                     </button>
-                )}
-
-                {saveStatus === 'saving' && (
-                    <span style={{
-                        color: '#f59e0b', fontSize: '0.8rem', background: '#422006',
-                        padding: '0.3rem 0.6rem', borderRadius: '6px', whiteSpace: 'nowrap'
-                    }}>💾 Saving...</span>
-                )}
-                {saveStatus === 'saved' && (
-                    <span style={{
-                        color: '#10b981', fontSize: '0.8rem', background: '#052e16',
-                        padding: '0.3rem 0.6rem', borderRadius: '6px', whiteSpace: 'nowrap'
-                    }}>✓ Saved</span>
                 )}
             </div>
 
@@ -806,6 +829,7 @@ export default function EventRespondPage() {
                 showAvailabilityCounts={event.show_availability_counts}
                 availabilityCounts={availabilityCounts}
                 availabilityTotal={availabilityTotal}
+                saveStatus={saveStatus}
             />
 
             {/* Empty submission confirmation */}
