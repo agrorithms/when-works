@@ -349,6 +349,10 @@ export default function EventRespondPage() {
     }, [mode, scheduleSave])
 
     const toggleDate = useCallback((dateStr) => {
+        if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur()
+        }
+
         if (!sessionStarted && !sessionStarting.current) {
             setPendingDate(dateStr)
             startSession(nameRef.current.trim() || null)

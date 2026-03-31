@@ -3,6 +3,7 @@
 import { memo } from 'react'
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const TAP_MOVE_THRESHOLD_PX = 10
 
 function MonthGrid({
     year,
@@ -67,10 +68,29 @@ function MonthGrid({
                 style={style}
                 title={showAvailabilityCounts && selectable ? availabilityTitle : undefined}
                 onPointerDown={(e) => {
-                    if (selectable) {
-                        e.preventDefault()
-                        onToggleDate(dateStr)
-                    }
+                    if (!selectable) return
+                    e.currentTarget.dataset.pointerStartX = String(e.clientX)
+                    e.currentTarget.dataset.pointerStartY = String(e.clientY)
+                }}
+                onPointerUp={(e) => {
+                    if (!selectable) return
+
+                    const startX = Number(e.currentTarget.dataset.pointerStartX)
+                    const startY = Number(e.currentTarget.dataset.pointerStartY)
+                    delete e.currentTarget.dataset.pointerStartX
+                    delete e.currentTarget.dataset.pointerStartY
+
+                    if (!Number.isFinite(startX) || !Number.isFinite(startY)) return
+
+                    const movedX = Math.abs(e.clientX - startX)
+                    const movedY = Math.abs(e.clientY - startY)
+                    if (movedX > TAP_MOVE_THRESHOLD_PX || movedY > TAP_MOVE_THRESHOLD_PX) return
+
+                    onToggleDate(dateStr)
+                }}
+                onPointerCancel={(e) => {
+                    delete e.currentTarget.dataset.pointerStartX
+                    delete e.currentTarget.dataset.pointerStartY
                 }}
             >
                 {showAvailabilityCounts ? (
