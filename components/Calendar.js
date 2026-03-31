@@ -76,7 +76,7 @@ function MonthGrid({
                         <span style={{ lineHeight: 1.1 }}>{day}</span>
                         {selectable && (
                             <span style={{
-                                fontSize: '0.62rem',
+                                fontSize: '0.72rem',
                                 opacity: 0.85,
                                 marginTop: '0.15rem',
                                 lineHeight: 1
