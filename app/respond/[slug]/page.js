@@ -630,7 +630,7 @@ export default function EventRespondPage() {
                         color: '#c7d2fe', padding: '0.5rem 0.75rem', borderRadius: '8px',
                         fontSize: '0.8rem', fontWeight: 600
                     }}>
-                        👥 {responseCount} attendee{responseCount !== 1 ? 's' : ''} responded
+                        👥 {responseCount} responded
                     </div>
                 </div>
             </div>
@@ -660,7 +660,7 @@ export default function EventRespondPage() {
                     }}
                 />
                 <span style={{ color: '#e2e8f0', fontSize: '0.9rem' }}>
-                    I&apos;m submitting this for both me and my SO
+                    I&apos;m submitting for me and my SO
                 </span>
             </label>
 
@@ -715,18 +715,6 @@ export default function EventRespondPage() {
 
             {error && <p style={{ color: '#ef4444', margin: '0 0 1rem 0' }}>{error}</p>}
 
-            {event.show_availability_counts && (
-                <p style={{
-                    color: '#94a3b8',
-                    fontSize: '0.8rem',
-                    marginBottom: '0.75rem',
-                    textAlign: 'center'
-                }}>
-                    Live snapshot from other confirmed responses: day cards show available/responded counts
-                    ({availabilityTotal} confirmed attendees so far).
-                </p>
-            )}
-
             {/* Mode description text */}
             <p style={{
                 color: '#94a3b8',
@@ -741,10 +729,7 @@ export default function EventRespondPage() {
 
             {/* Clickable mode banner */}
             <div
-                onPointerDown={(e) => {
-                    e.preventDefault()
-                    handleModeChange()
-                }}
+                onClick={handleModeChange}
                 style={{
                     background: mode === 'available' ? '#065f46' : '#7f1d1d',
                     border: mode === 'available' ? '2px solid #10b981' : '2px solid #ef4444',
@@ -782,6 +767,18 @@ export default function EventRespondPage() {
                 }}>
                     💾 You have {otherModeDates.length} day{otherModeDates.length !== 1 ? 's' : ''} saved
                     as {otherModeLabel}. Switch back to view them.
+                </p>
+            )}
+
+            {event.show_availability_counts && (
+                <p style={{
+                    color: '#94a3b8',
+                    fontSize: '0.8rem',
+                    marginBottom: '0.75rem',
+                    textAlign: 'center'
+                }}>
+                    Dates now show available/responded counts, so you can see which days are already popular
+                    ({availabilityTotal} other confirmed so far).
                 </p>
             )}
 
