@@ -45,6 +45,7 @@ function MonthGrid({
         const selectable = isSelectable(dateStr)
         const isSelected = selectedDates.includes(dateStr)
         const availableCount = availabilityCounts[dateStr] || 0
+        const availabilityTitle = `${availableCount} of ${availabilityTotal} other confirmed attendees are available on this day.`
 
         let className = 'day-cell'
         let style = { touchAction: 'manipulation' }
@@ -64,6 +65,7 @@ function MonthGrid({
                 key={dateStr}
                 className={className}
                 style={style}
+                title={showAvailabilityCounts && selectable ? availabilityTitle : undefined}
                 onPointerDown={(e) => {
                     if (selectable) {
                         e.preventDefault()

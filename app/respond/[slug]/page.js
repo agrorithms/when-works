@@ -630,7 +630,7 @@ export default function EventRespondPage() {
                         color: '#c7d2fe', padding: '0.5rem 0.75rem', borderRadius: '8px',
                         fontSize: '0.8rem', fontWeight: 600
                     }}>
-                        👥 {responseCount} responded
+                        👥 {responseCount - 1} responded
                     </div>
                 </div>
             </div>
