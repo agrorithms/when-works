@@ -23,7 +23,7 @@ export default function EventsListPage() {
 
         const { data: responsesData } = await supabase
             .from('responses')
-            .select('id, event_id, confirmed')
+            .select('id, event_id, confirmed, includes_so')
 
         setEvents(eventsData || [])
         setResponses(responsesData || [])
@@ -40,6 +40,8 @@ export default function EventsListPage() {
     const copyLink = (slug) => {
         navigator.clipboard.writeText(getShareUrl(slug))
     }
+
+    const getAttendeeWeight = (response) => response.includes_so ? 2 : 1
 
     if (loading) {
         return (
@@ -78,8 +80,11 @@ export default function EventsListPage() {
             ) : (
                 events.map(event => {
                     const eventResponses = responses.filter(r => r.event_id === event.id)
-                    const confirmedCount = eventResponses.filter(r => r.confirmed).length
-                    const totalResponses = eventResponses.length
+                    const confirmedAttendees = eventResponses
+                        .filter(r => r.confirmed)
+                        .reduce((sum, r) => sum + getAttendeeWeight(r), 0)
+                    const totalAttendees = eventResponses
+                        .reduce((sum, r) => sum + getAttendeeWeight(r), 0)
 
                     return (
                         <Link
@@ -111,7 +116,7 @@ export default function EventsListPage() {
                                             background: '#1e3a2f', padding: '0.3rem 0.6rem',
                                             borderRadius: '6px', fontSize: '0.8rem', color: '#94a3b8'
                                         }}>
-                                            {confirmedCount}/{totalResponses} confirmed
+                                            {confirmedAttendees}/{totalAttendees} attendees
                                         </div>
                                     </div>
                                 </div>

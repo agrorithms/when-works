@@ -16,6 +16,7 @@ export default function CreateEventPage() {
     const [newEndDate, setNewEndDate] = useState('')
     const [newResponseDeadline, setNewResponseDeadline] = useState('')
     const [newBlockedDates, setNewBlockedDates] = useState([])
+    const [showAvailabilityCounts, setShowAvailabilityCounts] = useState(false)
     const [createError, setCreateError] = useState('')
     const [createLoading, setCreateLoading] = useState(false)
     const [created, setCreated] = useState(false)
@@ -104,7 +105,8 @@ export default function CreateEventPage() {
                 date_range_start: newStartDate,
                 date_range_end: newEndDate,
                 response_deadline: newResponseDeadline,
-                blocked_dates: newBlockedDates
+                blocked_dates: newBlockedDates,
+                show_availability_counts: showAvailabilityCounts
             })
 
         if (error) {
@@ -166,6 +168,7 @@ export default function CreateEventPage() {
                             setNewEndDate('')
                             setNewResponseDeadline('')
                             setNewBlockedDates([])
+                            setShowAvailabilityCounts(false)
                         }}
                     >
                         Create Another
@@ -274,6 +277,38 @@ export default function CreateEventPage() {
                     When you need responses by
                 </p>
             </div>
+
+            <label style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '0.75rem',
+                cursor: 'pointer',
+                padding: '0.75rem',
+                borderRadius: '10px',
+                background: '#1e293b',
+                border: '2px solid #334155',
+                marginBottom: '1rem'
+            }}>
+                <input
+                    type="checkbox"
+                    checked={showAvailabilityCounts}
+                    onChange={(e) => setShowAvailabilityCounts(e.target.checked)}
+                    style={{
+                        width: '20px',
+                        height: '20px',
+                        marginTop: '2px',
+                        accentColor: '#6366f1',
+                        cursor: 'pointer',
+                        flexShrink: 0
+                    }}
+                />
+                <span style={{ color: '#e2e8f0', fontSize: '0.9rem' }}>
+                    Show responders a live anonymous snapshot of current replies
+                    <span style={{ display: 'block', color: '#94a3b8', fontSize: '0.8rem', marginTop: '0.2rem' }}>
+                        They will see counts like &quot;3/7 available&quot; for each day, without names.
+                    </span>
+                </span>
+            </label>
 
             {newStartDate && newEndDate && newEndDate >= newStartDate && (
                 <>
