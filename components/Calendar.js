@@ -3,6 +3,7 @@
 import { memo } from 'react'
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const TAP_MOVE_THRESHOLD_PX = 10
 
 function MonthGrid({
     year,
@@ -15,7 +16,9 @@ function MonthGrid({
     blockedDates,
     showAvailabilityCounts,
     availabilityCounts,
-    availabilityTotal
+    availabilityTotal,
+    saveStatus,
+    showSaveStatus
 }) {
     const firstDay = new Date(year, month, 1).getDay()
     const daysInMonth = new Date(year, month + 1, 0).getDate()
@@ -67,10 +70,29 @@ function MonthGrid({
                 style={style}
                 title={showAvailabilityCounts && selectable ? availabilityTitle : undefined}
                 onPointerDown={(e) => {
-                    if (selectable) {
-                        e.preventDefault()
-                        onToggleDate(dateStr)
-                    }
+                    if (!selectable) return
+                    e.currentTarget.dataset.pointerStartX = String(e.clientX)
+                    e.currentTarget.dataset.pointerStartY = String(e.clientY)
+                }}
+                onPointerUp={(e) => {
+                    if (!selectable) return
+
+                    const startX = Number(e.currentTarget.dataset.pointerStartX)
+                    const startY = Number(e.currentTarget.dataset.pointerStartY)
+                    delete e.currentTarget.dataset.pointerStartX
+                    delete e.currentTarget.dataset.pointerStartY
+
+                    if (!Number.isFinite(startX) || !Number.isFinite(startY)) return
+
+                    const movedX = Math.abs(e.clientX - startX)
+                    const movedY = Math.abs(e.clientY - startY)
+                    if (movedX > TAP_MOVE_THRESHOLD_PX || movedY > TAP_MOVE_THRESHOLD_PX) return
+
+                    onToggleDate(dateStr)
+                }}
+                onPointerCancel={(e) => {
+                    delete e.currentTarget.dataset.pointerStartX
+                    delete e.currentTarget.dataset.pointerStartY
                 }}
             >
                 {showAvailabilityCounts ? (
@@ -96,15 +118,54 @@ function MonthGrid({
 
     return (
         <div style={{ marginBottom: '2rem' }}>
-            <h2 style={{
-                color: '#f8fafc',
-                fontWeight: 600,
-                textAlign: 'center',
-                marginBottom: '0.75rem',
-                fontSize: '1.2rem'
+            <div style={{
+                position: 'relative',
+                minHeight: '30px',
+                marginBottom: '0.75rem'
             }}>
-                {monthName}
-            </h2>
+                <h2 style={{
+                    color: '#f8fafc',
+                    fontWeight: 600,
+                    textAlign: 'center',
+                    marginBottom: 0,
+                    fontSize: '1.2rem'
+                }}>
+                    {monthName}
+                </h2>
+
+                {showSaveStatus && saveStatus === 'saving' && (
+                    <span style={{
+                        position: 'absolute',
+                        right: 0,
+                        top: '50%',
+                        transform: 'translateY(-50%)',
+                        color: '#f59e0b',
+                        fontSize: '0.8rem',
+                        background: '#422006',
+                        padding: '0.3rem 0.6rem',
+                        borderRadius: '6px',
+                        whiteSpace: 'nowrap'
+                    }}>
+                        💾 Saving...
+                    </span>
+                )}
+                {showSaveStatus && saveStatus === 'saved' && (
+                    <span style={{
+                        position: 'absolute',
+                        right: 0,
+                        top: '50%',
+                        transform: 'translateY(-50%)',
+                        color: '#10b981',
+                        fontSize: '0.8rem',
+                        background: '#052e16',
+                        padding: '0.3rem 0.6rem',
+                        borderRadius: '6px',
+                        whiteSpace: 'nowrap'
+                    }}>
+                        ✓ Saved
+                    </span>
+                )}
+            </div>
 
             <div className="calendar-grid" style={{ touchAction: 'manipulation' }}>
                 {DAYS.map(d => (
@@ -125,7 +186,8 @@ function Calendar({
     blockedDates = [],
     showAvailabilityCounts = false,
     availabilityCounts = {},
-    availabilityTotal = 0
+    availabilityTotal = 0,
+    saveStatus = 'idle'
 }) {
     const getMonthsInRange = () => {
         if (!startDate || !endDate) {
@@ -152,7 +214,7 @@ function Calendar({
 
     return (
         <div>
-            {months.map(({ year, month }) => (
+            {months.map(({ year, month }, index) => (
                 <MonthGrid
                     key={`${year}-${month}`}
                     year={year}
@@ -166,6 +228,8 @@ function Calendar({
                     showAvailabilityCounts={showAvailabilityCounts}
                     availabilityCounts={availabilityCounts}
                     availabilityTotal={availabilityTotal}
+                    saveStatus={saveStatus}
+                    showSaveStatus={index === 0}
                 />
             ))}
         </div>
