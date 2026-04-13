@@ -703,7 +703,7 @@ export default function EventRespondPage() {
 
                         {hostingRoundInfo.canUseLink ? (
                             <Link
-                                href={`/follow-up/${hostingRoundInfo.inviteToken}`}
+                                href={`/followup/${hostingRoundInfo.inviteToken}`}
                                 className="nav-link"
                                 style={{ display: 'inline-block', marginTop: '0.55rem' }}
                             >

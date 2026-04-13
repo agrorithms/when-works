@@ -109,9 +109,9 @@ export default function EventDetailPage() {
 
     const getFollowupInviteUrl = (token) => {
         if (typeof window !== 'undefined') {
-            return `${window.location.origin}/follow-up/${token}`
+            return `${window.location.origin}/followup/${token}`
         }
-        return `/follow-up/${token}`
+        return `/followup/${token}`
     }
 
     const copyUnansweredFollowupLinksForRound = (roundId) => {
