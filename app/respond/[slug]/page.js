@@ -53,9 +53,17 @@ export default function EventRespondPage() {
     const [showEmptyConfirm, setShowEmptyConfirm] = useState(false)
     const [emptyConfirmChecked, setEmptyConfirmChecked] = useState(false)
     const [resetSnapshot, setResetSnapshot] = useState(null)
+    const [hostingRoundInfo, setHostingRoundInfo] = useState(null)
+    const [hostingInfoLoading, setHostingInfoLoading] = useState(false)
 
     const selectedDates = mode === 'available' ? availableDates : unavailableDates
     const getAttendeeWeight = (response) => response.includes_so ? 2 : 1
+
+    const isAvailableOnDate = useCallback((responseType, dates, dateStr) => {
+        const selected = dates || []
+        if (responseType === 'available') return selected.includes(dateStr)
+        return !selected.includes(dateStr)
+    }, [])
 
     useEffect(() => { availableDatesRef.current = availableDates }, [availableDates])
     useEffect(() => { unavailableDatesRef.current = unavailableDates }, [unavailableDates])
@@ -562,6 +570,58 @@ export default function EventRespondPage() {
         }
     }
 
+    useEffect(() => {
+        const loadHostingInfo = async () => {
+            if (!confirmed || !event?.id || !responseId) {
+                setHostingRoundInfo(null)
+                return
+            }
+
+            setHostingInfoLoading(true)
+
+            const { data: openRounds } = await supabase
+                .from('event_followups')
+                .select('id, selected_date, status, created_at')
+                .eq('event_id', event.id)
+                .eq('status', 'open')
+                .order('created_at', { ascending: false })
+                .limit(1)
+
+            if (!openRounds || openRounds.length === 0) {
+                setHostingRoundInfo(null)
+                setHostingInfoLoading(false)
+                return
+            }
+
+            const round = openRounds[0]
+
+            const { data: inviteRows } = await supabase
+                .from('event_followup_invites')
+                .select('id, invite_token')
+                .eq('followup_id', round.id)
+                .eq('response_id', responseId)
+                .limit(1)
+
+            if (!inviteRows || inviteRows.length === 0) {
+                setHostingRoundInfo(null)
+                setHostingInfoLoading(false)
+                return
+            }
+
+            const invite = inviteRows[0]
+            const canUseLink = isAvailableOnDate(mode, mode === 'available' ? availableDates : unavailableDates, round.selected_date)
+
+            setHostingRoundInfo({
+                selectedDate: round.selected_date,
+                inviteToken: invite.invite_token,
+                canUseLink
+            })
+            setHostingInfoLoading(false)
+        }
+
+        loadHostingInfo()
+    }, [confirmed, event?.id, responseId, mode, availableDates, unavailableDates, isAvailableOnDate])
+
     if (eventLoading) {
         return (
             <div className="container" style={{ textAlign: 'center', paddingTop: '4rem' }}>
@@ -612,6 +672,49 @@ export default function EventRespondPage() {
                     <p style={{ color: '#64748b', marginTop: '0.5rem' }}>
                         {confirmedDates.length} day{confirmedDates.length !== 1 ? 's' : ''} marked as {mode}
                     </p>
+                )}
+
+                {hostingInfoLoading && (
+                    <p style={{ color: '#94a3b8', marginTop: '0.9rem' }}>
+                        Checking hosting follow-up status...
+                    </p>
+                )}
+
+                {!hostingInfoLoading && hostingRoundInfo && (
+                    <div style={{
+                        marginTop: '1rem',
+                        background: '#1e293b',
+                        border: '1px solid #334155',
+                        borderRadius: '10px',
+                        padding: '0.9rem'
+                    }}>
+                        <p style={{ color: '#e2e8f0', fontSize: '0.9rem' }}>
+                            A date was chosen for this event:
+                            {' '}
+                            <strong>
+                                {new Date(hostingRoundInfo.selectedDate + 'T12:00:00').toLocaleDateString('en-US', {
+                                    weekday: 'long',
+                                    month: 'long',
+                                    day: 'numeric',
+                                    year: 'numeric'
+                                })}
+                            </strong>
+                        </p>
+
+                        {hostingRoundInfo.canUseLink ? (
+                            <Link
+                                href={`/follow-up/${hostingRoundInfo.inviteToken}`}
+                                className="nav-link"
+                                style={{ display: 'inline-block', marginTop: '0.55rem' }}
+                            >
+                                🏠 Go To Hosting Form →
+                            </Link>
+                        ) : (
+                            <p style={{ color: '#94a3b8', marginTop: '0.45rem', fontSize: '0.85rem' }}>
+                                You are not currently marked available on that chosen date.
+                            </p>
+                        )}
+                    </div>
                 )}
 
                 <p style={{ marginTop: '1.5rem' }}>
