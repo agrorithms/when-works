@@ -13,11 +13,25 @@ export default function EventDetailPage() {
 
     const [event, setEvent] = useState(null)
     const [responses, setResponses] = useState([])
+    const [followups, setFollowups] = useState([])
+    const [followupInvites, setFollowupInvites] = useState([])
+    const [followupAnswers, setFollowupAnswers] = useState([])
     const [loading, setLoading] = useState(true)
     const [notFound, setNotFound] = useState(false)
 
     const [tab, setTab] = useState('overview')
     const [showUnconfirmed, setShowUnconfirmed] = useState(false)
+    const [selectedHostingDate, setSelectedHostingDate] = useState('')
+    const [hostingGenerationLoading, setHostingGenerationLoading] = useState(false)
+    const [hostingError, setHostingError] = useState('')
+    const [hostingSuccess, setHostingSuccess] = useState('')
+    const [expandedRoundId, setExpandedRoundId] = useState(null)
+    const [filterCanHost, setFilterCanHost] = useState(false)
+    const [filterNoResponse, setFilterNoResponse] = useState(false)
+    const [filterShortlisted, setFilterShortlisted] = useState(false)
+    const [sortEarliestStart, setSortEarliestStart] = useState(true)
+    const [hoveredSuggestedDate, setHoveredSuggestedDate] = useState('')
+    const [pinnedSuggestedDate, setPinnedSuggestedDate] = useState('')
 
     const fetchData = useCallback(async () => {
         const { data: eventData, error: eventError } = await supabase
@@ -38,8 +52,35 @@ export default function EventDetailPage() {
             .eq('event_id', eventId)
             .order('created_at', { ascending: true })
 
+        const { data: followupsData } = await supabase
+            .from('event_followups')
+            .select('*')
+            .eq('event_id', eventId)
+            .order('created_at', { ascending: false })
+
+        const followupIds = (followupsData || []).map(f => f.id)
+        let invitesData = []
+        let answersData = []
+
+        if (followupIds.length > 0) {
+            const { data: fetchedInvites } = await supabase
+                .from('event_followup_invites')
+                .select('*')
+                .in('followup_id', followupIds)
+            invitesData = fetchedInvites || []
+
+            const { data: fetchedAnswers } = await supabase
+                .from('event_followup_answers')
+                .select('*')
+                .in('followup_id', followupIds)
+            answersData = fetchedAnswers || []
+        }
+
         setEvent(eventData[0])
         setResponses(responsesData || [])
+        setFollowups(followupsData || [])
+        setFollowupInvites(invitesData)
+        setFollowupAnswers(answersData)
         setLoading(false)
     }, [eventId])
 
@@ -66,11 +107,36 @@ export default function EventDetailPage() {
         }
     }
 
+    const getFollowupInviteUrl = (token) => {
+        if (typeof window !== 'undefined') {
+            return `${window.location.origin}/followup/${token}`
+        }
+        return `/followup/${token}`
+    }
+
+    const copyUnansweredFollowupLinksForRound = (roundId) => {
+        const invites = getInvitesForRound(roundId)
+        const unanswered = invites.filter(invite => !getAnswerForInvite(invite.id))
+        if (unanswered.length === 0) return
+        const lines = unanswered.map(i => `${i.invited_display_name}: ${getFollowupInviteUrl(i.invite_token)}`)
+        navigator.clipboard.writeText(lines.join('\n'))
+    }
+
+    const copySingleFollowupLink = (token) => {
+        navigator.clipboard.writeText(getFollowupInviteUrl(token))
+    }
+
     const getFilteredResponses = () => {
         return showUnconfirmed ? responses : responses.filter(r => r.confirmed)
     }
 
     const getAttendeeWeight = (response) => response.includes_so ? 2 : 1
+
+    const isResponseAvailableOnDate = (response, dateStr) => {
+        const dates = response.dates || []
+        if (response.response_type === 'available') return dates.includes(dateStr)
+        return !dates.includes(dateStr)
+    }
 
     const getAvailabilityForDate = (dateStr) => {
         const filtered = getFilteredResponses()
@@ -143,6 +209,46 @@ export default function EventDetailPage() {
         return results.sort((a, b) => b.count - a.count)
     }
 
+    const getBestDateDiffs = (bestDates) => {
+        const groupedByCount = bestDates.reduce((acc, entry) => {
+            if (!acc[entry.count]) acc[entry.count] = []
+            acc[entry.count].push(entry)
+            return acc
+        }, {})
+
+        const diffs = {}
+
+        Object.values(groupedByCount).forEach(group => {
+            if (group.length < 2) return
+
+            group.forEach(entry => {
+                if (entry.count <= 1) return
+
+                const others = group.filter(other => other.date !== entry.date)
+                if (others.length === 0) return
+
+                const currentSet = new Set(entry.available)
+                const plus = entry.available
+                    .filter(name => others.some(other => !other.available.includes(name)))
+                    .sort((a, b) => a.localeCompare(b))
+                const minusSet = new Set()
+
+                others.forEach(other => {
+                    other.available.forEach(name => {
+                        if (!currentSet.has(name)) minusSet.add(name)
+                    })
+                })
+
+                diffs[entry.date] = {
+                    plus,
+                    minus: Array.from(minusSet).sort((a, b) => a.localeCompare(b))
+                }
+            })
+        })
+
+        return diffs
+    }
+
     const isInEventRange = (dateStr) => {
         if (!event) return false
         return dateStr >= event.date_range_start && dateStr <= event.date_range_end
@@ -157,6 +263,215 @@ export default function EventDetailPage() {
         const m = String(month + 1).padStart(2, '0')
         const d = String(day).padStart(2, '0')
         return `${year}-${m}-${d}`
+    }
+
+    const getInvitesForRound = (roundId) => {
+        return followupInvites.filter(i => i.followup_id === roundId)
+    }
+
+    const getAnswerForInvite = (inviteId) => {
+        return followupAnswers.find(a => a.invite_id === inviteId) || null
+    }
+
+    const formatTime = (timeString, fallbackText) => {
+        if (!timeString) return fallbackText || 'No time given'
+        const parts = timeString.split(':')
+        const hour = Number(parts[0])
+        const minute = Number(parts[1])
+        if (Number.isNaN(hour) || Number.isNaN(minute)) return fallbackText || timeString
+        const suffix = hour >= 12 ? 'PM' : 'AM'
+        const displayHour = hour % 12 === 0 ? 12 : hour % 12
+        return `${displayHour}:${String(minute).padStart(2, '0')} ${suffix}`
+    }
+
+    const getTimeZoneOffsetMs = (dateObj, timeZone) => {
+        try {
+            const formatter = new Intl.DateTimeFormat('en-US', {
+                timeZone,
+                hour12: false,
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            })
+
+            const parts = formatter.formatToParts(dateObj)
+            const mapped = {}
+            for (const part of parts) {
+                if (part.type !== 'literal') mapped[part.type] = part.value
+            }
+
+            const asUtcMs = Date.UTC(
+                Number(mapped.year),
+                Number(mapped.month) - 1,
+                Number(mapped.day),
+                Number(mapped.hour),
+                Number(mapped.minute),
+                Number(mapped.second)
+            )
+
+            return asUtcMs - dateObj.getTime()
+        } catch {
+            return 0
+        }
+    }
+
+    const getUtcTimestampForZonedDateTime = (dateStr, timeStr, timeZone) => {
+        if (!dateStr || !timeStr || !timeZone) return null
+        const timeParts = timeStr.split(':')
+        const hour = Number(timeParts[0])
+        const minute = Number(timeParts[1])
+        const second = Number(timeParts[2] || 0)
+        if ([hour, minute, second].some(Number.isNaN)) return null
+
+        const [year, month, day] = dateStr.split('-').map(Number)
+        if ([year, month, day].some(Number.isNaN)) return null
+
+        let utcMs = Date.UTC(year, month - 1, day, hour, minute, second)
+        const firstOffset = getTimeZoneOffsetMs(new Date(utcMs), timeZone)
+        utcMs -= firstOffset
+        const secondOffset = getTimeZoneOffsetMs(new Date(utcMs), timeZone)
+        if (secondOffset !== firstOffset) {
+            utcMs -= (secondOffset - firstOffset)
+        }
+        return utcMs
+    }
+
+    const getComparableHostTimeValue = (answer, round) => {
+        if (!answer?.preferred_start_time || !round?.selected_date) return Number.MAX_SAFE_INTEGER
+        const responderTz = answer.responder_timezone || round.timezone || 'America/New_York'
+        const utcMs = getUtcTimestampForZonedDateTime(round.selected_date, answer.preferred_start_time, responderTz)
+        return utcMs === null ? Number.MAX_SAFE_INTEGER : utcMs
+    }
+
+    const formatRoundTimezoneTime = (answer, round) => {
+        if (!answer?.preferred_start_time || !round?.selected_date) {
+            return formatTime(answer?.preferred_start_time, answer?.preferred_start_time_text)
+        }
+        const roundTz = round.timezone || 'America/New_York'
+        const responderTz = answer.responder_timezone || roundTz
+        const utcMs = getUtcTimestampForZonedDateTime(round.selected_date, answer.preferred_start_time, responderTz)
+        if (utcMs === null) {
+            return formatTime(answer?.preferred_start_time, answer?.preferred_start_time_text)
+        }
+        return new Intl.DateTimeFormat('en-US', {
+            timeZone: roundTz,
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true
+        }).format(new Date(utcMs))
+    }
+
+    const getRoundRowsSorted = (roundId) => {
+        const round = followups.find(f => f.id === roundId)
+        const rows = getInvitesForRound(roundId).map(invite => ({
+            invite,
+            answer: getAnswerForInvite(invite.id)
+        }))
+
+        const filteredRows = rows.filter((row) => {
+            if (filterCanHost && !row.answer?.still_available) return false
+            if (filterNoResponse && row.answer) return false
+            if (filterShortlisted && !row.invite.is_shortlisted) return false
+            return true
+        })
+
+        return filteredRows.sort((a, b) => {
+            const aRank = a.answer ? (a.answer.still_available ? 0 : 1) : 2
+            const bRank = b.answer ? (b.answer.still_available ? 0 : 1) : 2
+            if (aRank !== bRank) return aRank - bRank
+
+            if (sortEarliestStart && a.answer?.still_available && b.answer?.still_available) {
+                const aTime = getComparableHostTimeValue(a.answer, round)
+                const bTime = getComparableHostTimeValue(b.answer, round)
+                if (aTime !== bTime) return aTime - bTime
+            }
+
+            return a.invite.invited_display_name.localeCompare(b.invite.invited_display_name)
+        })
+    }
+
+    const toggleShortlist = async (invite) => {
+        const nextValue = !invite.is_shortlisted
+        const { error } = await supabase
+            .from('event_followup_invites')
+            .update({ is_shortlisted: nextValue })
+            .eq('id', invite.id)
+
+        if (error) return
+
+        setFollowupInvites(prev => prev.map(i => (
+            i.id === invite.id
+                ? { ...i, is_shortlisted: nextValue }
+                : i
+        )))
+    }
+
+    const handleGenerateHostingRound = async () => {
+        setHostingError('')
+        setHostingSuccess('')
+
+        if (!selectedHostingDate) {
+            setHostingError('Pick a date first.')
+            return
+        }
+        if (!isInEventRange(selectedHostingDate)) {
+            setHostingError('Selected date must be within the event range.')
+            return
+        }
+        if (isBlocked(selectedHostingDate)) {
+            setHostingError('Selected date is blocked for this event.')
+            return
+        }
+
+        const eligibleResponses = responses.filter(r => isResponseAvailableOnDate(r, selectedHostingDate))
+        if (eligibleResponses.length === 0) {
+            setHostingError('No responders are available on that date yet.')
+            return
+        }
+
+        setHostingGenerationLoading(true)
+
+        const { data: round, error: roundError } = await supabase
+            .from('event_followups')
+            .insert({
+                event_id: eventId,
+                selected_date: selectedHostingDate,
+                status: 'open'
+            })
+            .select('*')
+            .single()
+
+        if (roundError || !round) {
+            setHostingGenerationLoading(false)
+            setHostingError('Could not create hosting round. ' + (roundError?.message || ''))
+            return
+        }
+
+        const inviteRows = eligibleResponses.map(r => ({
+            followup_id: round.id,
+            response_id: r.id,
+            invited_display_name: r.display_name,
+            invited_includes_so: Boolean(r.includes_so)
+        }))
+
+        const { error: inviteError } = await supabase
+            .from('event_followup_invites')
+            .insert(inviteRows)
+
+        if (inviteError) {
+            setHostingGenerationLoading(false)
+            setHostingError('Round created, but invite creation failed: ' + inviteError.message)
+            await fetchData()
+            return
+        }
+
+        setHostingGenerationLoading(false)
+        setExpandedRoundId(round.id)
+        setHostingSuccess(`Created hosting round and ${inviteRows.length} tokenized invite links.`)
+        await fetchData()
     }
 
     if (loading) {
@@ -184,6 +499,10 @@ export default function EventDetailPage() {
     const confirmedCount = responses.filter(r => r.confirmed).reduce((sum, r) => sum + getAttendeeWeight(r), 0)
     const unconfirmedCount = responses.filter(r => !r.confirmed).reduce((sum, r) => sum + getAttendeeWeight(r), 0)
     const months = getMonthsInRange()
+    const bestDates = getBestDates()
+    const bestDateDiffs = getBestDateDiffs(bestDates)
+    const activeSuggestedDate = hoveredSuggestedDate || pinnedSuggestedDate
+    const activeSuggestedDiff = activeSuggestedDate ? bestDateDiffs[activeSuggestedDate] : null
 
     return (
         <div className="container">
@@ -242,6 +561,344 @@ export default function EventDetailPage() {
                 >
                     {showUnconfirmed ? '👁️ Showing all' : '👁️ Confirmed only'}
                 </button>
+            </div>
+
+            <div style={{
+                background: '#111827',
+                border: '1px solid #334155',
+                borderRadius: '12px',
+                padding: '1rem',
+                marginBottom: '1.25rem'
+            }}>
+                <h3 style={{ marginBottom: '0.35rem', color: '#f8fafc' }}>🏠 Hosting Follow-Up</h3>
+                <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '0.9rem' }}>
+                    Pick the chosen date and generate tokenized hosting links for everyone available on that date.
+                    This includes both confirmed and in-progress responders.
+                </p>
+
+                <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '0.6rem' }}>
+                    <input
+                        type="date"
+                        className="input-field"
+                        value={selectedHostingDate}
+                        onChange={(e) => setSelectedHostingDate(e.target.value)}
+                        min={event.date_range_start}
+                        max={event.date_range_end}
+                        style={{ marginBottom: 0, maxWidth: '220px' }}
+                    />
+                    <button
+                        onClick={handleGenerateHostingRound}
+                        disabled={hostingGenerationLoading}
+                        style={{
+                            background: '#059669',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '8px',
+                            padding: '0.5rem 0.9rem',
+                            cursor: hostingGenerationLoading ? 'default' : 'pointer',
+                            fontSize: '0.85rem'
+                        }}
+                    >
+                        {hostingGenerationLoading ? 'Generating...' : 'Generate Hosting Round'}
+                    </button>
+                </div>
+
+                <p style={{ color: '#94a3b8', fontSize: '0.78rem', marginBottom: '0.35rem' }}>Suggested dates</p>
+                <div style={{ position: 'relative', marginBottom: '0.75rem' }}>
+                    <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                        {bestDates.slice(0, 5).map(d => (
+                            <button
+                                key={d.date}
+                                type="button"
+                                onClick={() => setSelectedHostingDate(d.date)}
+                                onMouseEnter={() => setHoveredSuggestedDate(d.date)}
+                                onMouseLeave={() => setHoveredSuggestedDate('')}
+                                onFocus={() => setHoveredSuggestedDate(d.date)}
+                                onBlur={() => setHoveredSuggestedDate('')}
+                                onPointerDown={(e) => {
+                                    if (e.pointerType === 'touch') {
+                                        setPinnedSuggestedDate(prev => prev === d.date ? '' : d.date)
+                                    }
+                                }}
+                                style={{
+                                    background: selectedHostingDate === d.date ? '#1d4ed8' : '#1e293b',
+                                    color: selectedHostingDate === d.date ? '#dbeafe' : '#cbd5e1',
+                                    border: selectedHostingDate === d.date ? '1px solid #60a5fa' : '1px solid #334155',
+                                    borderRadius: '999px',
+                                    padding: '0.25rem 0.6rem',
+                                    cursor: 'pointer',
+                                    fontSize: '0.75rem'
+                                }}
+                                aria-describedby={activeSuggestedDate === d.date ? 'suggested-date-diff' : undefined}
+                            >
+                                {new Date(d.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                            </button>
+                        ))}
+                    </div>
+                    {activeSuggestedDate && (
+                        <div
+                            id="suggested-date-diff"
+                            role="status"
+                            style={{
+                                marginTop: '0.55rem',
+                                background: '#0f172a',
+                                border: '1px solid #334155',
+                                borderRadius: '8px',
+                                padding: '0.55rem 0.65rem',
+                                maxWidth: '460px'
+                            }}
+                        >
+                            <p style={{ color: '#cbd5e1', fontSize: '0.75rem', marginBottom: '0.35rem' }}>
+                                {new Date(activeSuggestedDate + 'T12:00:00').toLocaleDateString('en-US', {
+                                    weekday: 'short',
+                                    month: 'short',
+                                    day: 'numeric'
+                                })}
+                            </p>
+                            {activeSuggestedDiff && (activeSuggestedDiff.plus.length > 0 || activeSuggestedDiff.minus.length > 0) ? (
+                                <div style={{ fontSize: '0.76rem', display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
+                                    {activeSuggestedDiff.plus.map(name => (
+                                        <span key={`${activeSuggestedDate}-chip-plus-${name}`} style={{ color: '#86efac' }}>
+                                            +{name}
+                                        </span>
+                                    ))}
+                                    {activeSuggestedDiff.minus.map(name => (
+                                        <span key={`${activeSuggestedDate}-chip-minus-${name}`} style={{ color: '#fca5a5' }}>
+                                            -{name}
+                                        </span>
+                                    ))}
+                                </div>
+                            ) : (
+                                <p style={{ color: '#94a3b8', fontSize: '0.75rem' }}>No attendee diff for this date.</p>
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                {hostingError && (
+                    <p style={{ color: '#fca5a5', fontSize: '0.85rem', marginBottom: '0.45rem' }}>{hostingError}</p>
+                )}
+                {hostingSuccess && (
+                    <p style={{ color: '#6ee7b7', fontSize: '0.85rem', marginBottom: '0.45rem' }}>{hostingSuccess}</p>
+                )}
+
+                <div style={{ marginBottom: '0.8rem' }}>
+                    <p style={{ color: '#94a3b8', fontSize: '0.78rem', marginBottom: '0.35rem' }}>Hosting response filters</p>
+                    <div style={{ display: 'flex', gap: '0.45rem', flexWrap: 'wrap' }}>
+                        <button
+                            type="button"
+                            onClick={() => setFilterCanHost(prev => !prev)}
+                            style={{
+                                background: filterCanHost ? '#065f46' : '#1e293b',
+                                color: filterCanHost ? '#a7f3d0' : '#cbd5e1',
+                                border: '1px solid #334155',
+                                borderRadius: '999px',
+                                padding: '0.3rem 0.65rem',
+                                fontSize: '0.78rem',
+                                cursor: 'pointer'
+                            }}
+                        >
+                            Can Host
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setFilterNoResponse(prev => !prev)}
+                            style={{
+                                background: filterNoResponse ? '#7c2d12' : '#1e293b',
+                                color: filterNoResponse ? '#fed7aa' : '#cbd5e1',
+                                border: '1px solid #334155',
+                                borderRadius: '999px',
+                                padding: '0.3rem 0.65rem',
+                                fontSize: '0.78rem',
+                                cursor: 'pointer'
+                            }}
+                        >
+                            No Response
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setFilterShortlisted(prev => !prev)}
+                            style={{
+                                background: filterShortlisted ? '#1d4ed8' : '#1e293b',
+                                color: filterShortlisted ? '#dbeafe' : '#cbd5e1',
+                                border: '1px solid #334155',
+                                borderRadius: '999px',
+                                padding: '0.3rem 0.65rem',
+                                fontSize: '0.78rem',
+                                cursor: 'pointer'
+                            }}
+                        >
+                            Shortlisted
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setSortEarliestStart(prev => !prev)}
+                            style={{
+                                background: sortEarliestStart ? '#312e81' : '#1e293b',
+                                color: sortEarliestStart ? '#c7d2fe' : '#cbd5e1',
+                                border: '1px solid #334155',
+                                borderRadius: '999px',
+                                padding: '0.3rem 0.65rem',
+                                fontSize: '0.78rem',
+                                cursor: 'pointer'
+                            }}
+                        >
+                            Earliest Start
+                        </button>
+                    </div>
+                </div>
+
+                {followups.length === 0 ? (
+                    <p style={{ color: '#64748b', fontSize: '0.85rem' }}>No hosting rounds yet.</p>
+                ) : (
+                    <div style={{ display: 'grid', gap: '0.75rem' }}>
+                        {followups.map(round => {
+                            const invites = getInvitesForRound(round.id)
+                            const rawRows = invites.map(invite => ({
+                                invite,
+                                answer: getAnswerForInvite(invite.id)
+                            }))
+                            const rows = getRoundRowsSorted(round.id)
+                            const respondedCount = rawRows.filter(row => row.answer).length
+                            const canHostRows = rawRows.filter(row => row.answer?.still_available)
+
+                            return (
+                                <div key={round.id} style={{
+                                    border: '1px solid #334155',
+                                    borderRadius: '10px',
+                                    padding: '0.8rem'
+                                }}>
+                                    <div style={{
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'flex-start',
+                                        gap: '0.75rem',
+                                        flexWrap: 'wrap'
+                                    }}>
+                                        <div>
+                                            <p style={{ color: '#f8fafc', fontWeight: 600, marginBottom: '0.2rem' }}>
+                                                {new Date(round.selected_date + 'T12:00:00').toLocaleDateString('en-US', {
+                                                    weekday: 'long',
+                                                    month: 'long',
+                                                    day: 'numeric',
+                                                    year: 'numeric'
+                                                })}
+                                            </p>
+                                            <p style={{ color: '#94a3b8', fontSize: '0.8rem' }}>
+                                                {respondedCount}/{invites.length} responded, {canHostRows.length} can host, timezone: {round.timezone}
+                                            </p>
+                                        </div>
+
+                                        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                            <button
+                                                type="button"
+                                                onClick={() => copyUnansweredFollowupLinksForRound(round.id)}
+                                                style={{
+                                                    background: '#334155',
+                                                    color: '#e2e8f0',
+                                                    border: 'none',
+                                                    padding: '0.35rem 0.7rem',
+                                                    borderRadius: '7px',
+                                                    cursor: 'pointer',
+                                                    fontSize: '0.78rem'
+                                                }}
+                                            >
+                                                📋 Copy Unanswered Links
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setExpandedRoundId(prev => prev === round.id ? null : round.id)}
+                                                style={{
+                                                    background: expandedRoundId === round.id ? '#1d4ed8' : '#1e293b',
+                                                    color: expandedRoundId === round.id ? '#dbeafe' : '#cbd5e1',
+                                                    border: '1px solid #334155',
+                                                    padding: '0.35rem 0.7rem',
+                                                    borderRadius: '7px',
+                                                    cursor: 'pointer',
+                                                    fontSize: '0.78rem'
+                                                }}
+                                            >
+                                                {expandedRoundId === round.id ? 'Hide Responses' : 'View Responses'}
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {expandedRoundId === round.id && (
+                                        <div style={{ marginTop: '0.8rem', display: 'grid', gap: '0.5rem' }}>
+                                            {rows.map(({ invite, answer }) => (
+                                                <div key={invite.id} style={{
+                                                    background: '#0f172a',
+                                                    border: '1px solid #1e293b',
+                                                    borderRadius: '8px',
+                                                    padding: '0.6rem'
+                                                }}>
+                                                    <div style={{
+                                                        display: 'flex',
+                                                        justifyContent: 'space-between',
+                                                        alignItems: 'flex-start',
+                                                        gap: '0.5rem',
+                                                        flexWrap: 'wrap'
+                                                    }}>
+                                                        <div>
+                                                            <p style={{ color: '#f8fafc', fontSize: '0.9rem', marginBottom: '0.2rem' }}>
+                                                                {invite.invited_display_name}
+                                                                {invite.invited_includes_so ? ' (+SO)' : ''}
+                                                            </p>
+                                                            <p style={{ color: '#64748b', fontSize: '0.75rem', wordBreak: 'break-all' }}>
+                                                                {getFollowupInviteUrl(invite.invite_token)}
+                                                            </p>
+                                                        </div>
+                                                        {!answer && (
+                                                            <span style={{ color: '#f59e0b', fontSize: '0.8rem' }}>No response yet</span>
+                                                        )}
+                                                        {answer?.still_available && (
+                                                            <span style={{ color: '#34d399', fontSize: '0.8rem' }}>
+                                                                Can host at {formatRoundTimezoneTime(answer, round)} ({round.timezone || 'America/New_York'})
+                                                            </span>
+                                                        )}
+                                                        {answer && !answer.still_available && (
+                                                            <span style={{ color: '#f87171', fontSize: '0.8rem' }}>Cannot host</span>
+                                                        )}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => copySingleFollowupLink(invite.invite_token)}
+                                                            style={{
+                                                                background: '#1e293b',
+                                                                color: '#cbd5e1',
+                                                                border: '1px solid #334155',
+                                                                padding: '0.25rem 0.55rem',
+                                                                borderRadius: '6px',
+                                                                cursor: 'pointer',
+                                                                fontSize: '0.75rem'
+                                                            }}
+                                                        >
+                                                            Copy Link
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => toggleShortlist(invite)}
+                                                            style={{
+                                                                background: invite.is_shortlisted ? '#1d4ed8' : '#1e293b',
+                                                                color: invite.is_shortlisted ? '#dbeafe' : '#cbd5e1',
+                                                                border: '1px solid #334155',
+                                                                padding: '0.25rem 0.55rem',
+                                                                borderRadius: '6px',
+                                                                cursor: 'pointer',
+                                                                fontSize: '0.75rem'
+                                                            }}
+                                                        >
+                                                            {invite.is_shortlisted ? 'Shortlisted' : 'Shortlist'}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )
+                        })}
+                    </div>
+                )}
             </div>
 
             {filteredResponses.length === 0 ? (
@@ -415,7 +1072,7 @@ export default function EventDetailPage() {
                             <p style={{ color: '#94a3b8', marginBottom: '1rem', fontSize: '0.9rem' }}>
                                 Dates ranked by number of people available:
                             </p>
-                            {getBestDates().filter(d => d.count > 0).slice(0, 15).map(d => (
+                            {bestDates.filter(d => d.count > 0).slice(0, 15).map(d => (
                                 <div key={d.date} className="person-card" style={{
                                     display: 'flex', justifyContent: 'space-between', alignItems: 'center'
                                 }}>
@@ -428,6 +1085,20 @@ export default function EventDetailPage() {
                                         <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '0.25rem' }}>
                                             {d.available.join(', ')}
                                         </div>
+                                        {bestDateDiffs[d.date] && (bestDateDiffs[d.date].plus.length > 0 || bestDateDiffs[d.date].minus.length > 0) && (
+                                            <div style={{ fontSize: '0.78rem', marginTop: '0.4rem', display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
+                                                {bestDateDiffs[d.date].plus.map(name => (
+                                                    <span key={`${d.date}-plus-${name}`} style={{ color: '#86efac' }}>
+                                                        +{name}
+                                                    </span>
+                                                ))}
+                                                {bestDateDiffs[d.date].minus.map(name => (
+                                                    <span key={`${d.date}-minus-${name}`} style={{ color: '#fca5a5' }}>
+                                                        -{name}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
                                     <div style={{
                                         background: d.count === d.totalAttendees ? '#065f46' : '#1e3a2f',
@@ -440,7 +1111,7 @@ export default function EventDetailPage() {
                                     </div>
                                 </div>
                             ))}
-                            {getBestDates().filter(d => d.count > 0).length === 0 && (
+                            {bestDates.filter(d => d.count > 0).length === 0 && (
                                 <p style={{ color: '#64748b', textAlign: 'center', padding: '2rem' }}>
                                     No availability data yet.
                                 </p>
