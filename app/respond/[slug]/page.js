@@ -2,16 +2,19 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams } from 'next/navigation'
+import { useSession, signIn } from 'next-auth/react'
 import { supabase } from '../../../lib/supabase'
 import Calendar from '../../../components/Calendar'
 import Link from 'next/link'
 
 const NAME_STORAGE_KEY = 'when_works_name'
+const SAVED_INVITES_KEY = 'when_works_saved_invites'
 const getSessionKey = (slug) => `when_works_session_${slug}`
 
 export default function EventRespondPage() {
     const params = useParams()
     const slug = params.slug
+    const { data: session } = useSession()
 
     const [event, setEvent] = useState(null)
     const [eventLoading, setEventLoading] = useState(true)
@@ -70,6 +73,17 @@ export default function EventRespondPage() {
     useEffect(() => { responseIdRef.current = responseId }, [responseId])
     useEffect(() => { nameRef.current = name }, [name])
 
+    // Retro-link google_email when user signs in after already having a response record
+    useEffect(() => {
+        if (!session?.user?.email || !responseId) return
+        supabase
+            .from('responses')
+            .update({ google_email: session.user.email })
+            .eq('id', responseId)
+            .is('google_email', null)
+            .then(() => {})
+    }, [session?.user?.email, responseId])
+
     // Fetch event
     useEffect(() => {
         const fetchEvent = async () => {
@@ -108,6 +122,21 @@ export default function EventRespondPage() {
 
         fetchEvent()
     }, [slug])
+
+    useEffect(() => {
+        if (!event) return
+
+        if (typeof window === 'undefined') return
+
+        try {
+            const nextSaved = JSON.parse(localStorage.getItem(SAVED_INVITES_KEY) || '[]')
+            if (!nextSaved.includes(slug)) {
+                localStorage.setItem(SAVED_INVITES_KEY, JSON.stringify([...nextSaved, slug]))
+            }
+        } catch {
+            localStorage.setItem(SAVED_INVITES_KEY, JSON.stringify([slug]))
+        }
+    }, [event, slug])
 
     // Debounced name save — updates DB when name changes while session is active
     useEffect(() => {
@@ -315,7 +344,8 @@ export default function EventRespondPage() {
                 response_type: 'available',
                 dates: [],
                 confirmed: false,
-                event_id: currentEvent.id
+                event_id: currentEvent.id,
+                google_email: session?.user?.email ?? null,
             })
             .select()
 
@@ -342,7 +372,7 @@ export default function EventRespondPage() {
             scheduleSave()
         }
         sessionStarting.current = false
-    }, [includesSO, scheduleSave, slug])
+    }, [includesSO, scheduleSave, slug, session])
 
     const processDateToggle = useCallback((dateStr) => {
         if (resetSnapshot) {
@@ -770,6 +800,45 @@ export default function EventRespondPage() {
                     }}>
                         👥 {availabilityTotal} responded
                     </div>
+                    {session ? (
+                        <div style={{
+                            background: '#1e293b',
+                            border: '1px solid #334155',
+                            color: '#94a3b8',
+                            borderRadius: '8px',
+                            padding: '0.25rem 0.6rem',
+                            fontSize: '0.72rem',
+                            marginTop: '0.3rem'
+                        }}>
+                            ✓ {session.user.name?.split(' ')[0] || session.user.email}
+                        </div>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={() => signIn('google', { callbackUrl: window.location.href })}
+                            style={{
+                                background: '#1e293b',
+                                color: '#cbd5e1',
+                                border: '1px solid #334155',
+                                borderRadius: '8px',
+                                padding: '0.25rem 0.6rem',
+                                cursor: 'pointer',
+                                fontSize: '0.72rem',
+                                marginTop: '0.3rem',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.35rem'
+                            }}
+                        >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                                <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                                <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                                <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+                                <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                            </svg>
+                            Sign in with Google
+                        </button>
+                    )}
                 </div>
             </div>
 

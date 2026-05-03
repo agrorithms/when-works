@@ -305,6 +305,51 @@ h2 {
   text-decoration: underline;
 }
 
+.button-primary,
+.button-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 42px;
+  padding: 0.55rem 1rem;
+  border-radius: 10px;
+  text-decoration: none;
+  border: 1px solid transparent;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.button-primary {
+  background: #6366f1;
+  color: white;
+}
+
+.button-primary:hover {
+  background: #4f46e5;
+  transform: translateY(-1px);
+}
+
+.button-secondary {
+  background: #1e293b;
+  color: #e2e8f0;
+  border-color: #334155;
+}
+
+.button-secondary:hover {
+  background: #334155;
+  transform: translateY(-1px);
+}
+
+.section-card {
+  background: rgba(15, 23, 42, 0.84);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 18px;
+  padding: 1.2rem;
+}
+
 .tabs {
   display: flex;
   gap: 0.5rem;

@@ -1,4 +1,5 @@
 import './globals.css'
+import AppSessionProvider from '../components/SessionProvider'
 
 export const metadata = {
   title: 'When Works',
@@ -8,7 +9,9 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <AppSessionProvider>{children}</AppSessionProvider>
+      </body>
     </html>
   )
 }
