@@ -9,6 +9,7 @@ body {
   background: #0f172a;
   color: #e2e8f0;
   min-height: 100vh;
+  padding-top: 56px;
 }
 
 .container {
@@ -396,5 +397,187 @@ h2 {
 @media (max-width: 640px) {
   .date-range-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ── NavBar ─────────────────────────────────────────────── */
+
+.navbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-bottom: 1px solid #334155;
+  box-shadow: 0 1px 0 rgba(148, 163, 184, 0.08), 0 4px 16px rgba(15, 23, 42, 0.4);
+  min-height: 56px;
+}
+
+.navbar-inner {
+  width: 100%;
+  max-width: 100%;
+  padding: 0 1.5rem;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.navbar-brand {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #f8fafc;
+  text-decoration: none;
+  letter-spacing: -0.01em;
+  flex-shrink: 0;
+}
+
+.navbar-brand:hover {
+  color: #c7d2fe;
+}
+
+.navbar-links {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex: 1;
+}
+
+.navbar-auth {
+  position: relative;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.navbar-skeleton {
+  width: 100px;
+  height: 34px;
+  background: #334155;
+  border-radius: 8px;
+  animation: navbar-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes navbar-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+
+.navbar-signin {
+  font-size: 0.85rem;
+  min-height: 34px;
+  padding: 0.35rem 0.85rem;
+}
+
+.navbar-user-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  color: #e2e8f0;
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 0.35rem 0.75rem;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  max-width: 200px;
+}
+
+.navbar-user-btn:hover {
+  background: #334155;
+  border-color: #475569;
+}
+
+.navbar-user-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navbar-chevron {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+
+.navbar-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 210px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.6);
+  overflow: hidden;
+  z-index: 101;
+}
+
+.navbar-dropdown-header {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #334155;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.navbar-dropdown-header span:first-child {
+  color: #f8fafc;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.navbar-dropdown-email {
+  color: #64748b;
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navbar-dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 0.6rem 1rem;
+  color: #cbd5e1;
+  text-decoration: none;
+  font-size: 0.9rem;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.navbar-dropdown-item:hover {
+  background: #334155;
+  color: #f8fafc;
+}
+
+.navbar-dropdown-divider {
+  height: 1px;
+  background: #334155;
+  margin: 0.25rem 0;
+}
+
+.navbar-dropdown-signout {
+  color: #fca5a5;
+}
+
+.navbar-dropdown-signout:hover {
+  background: rgba(127, 29, 29, 0.2);
+  color: #fca5a5;
+}
+
+@media (max-width: 640px) {
+  .navbar-links {
+    display: none;
+  }
+  .navbar-user-btn {
+    max-width: 130px;
   }
 }

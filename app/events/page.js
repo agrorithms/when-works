@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { signIn, signOut, useSession } from 'next-auth/react'
+import { useSession } from 'next-auth/react'
 import { supabase } from '../../lib/supabase'
 
 const SAVED_INVITES_KEY = 'when_works_saved_invites'
@@ -207,15 +207,6 @@ export default function EventsDashboardPage() {
                         <Link href="/events/new" className="button-primary">
                             Create event
                         </Link>
-                        {signedIn ? (
-                            <button onClick={() => signOut({ callbackUrl: '/' })} className="button-secondary">
-                                Sign out
-                            </button>
-                        ) : (
-                            <button onClick={() => signIn('google', { callbackUrl: '/events' })} className="button-secondary">
-                                Sign in with Google
-                            </button>
-                        )}
                     </div>
                 </div>
 

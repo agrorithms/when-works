@@ -1,7 +1,6 @@
 'use client'
 
 import Link from 'next/link'
-import { signIn, signOut, useSession } from 'next-auth/react'
 
 function HeroCard({ title, description, href, primary = false, onClick }) {
     const cardStyles = {
@@ -55,9 +54,6 @@ function HeroCard({ title, description, href, primary = false, onClick }) {
 }
 
 export default function HomePage() {
-    const { data: session, status } = useSession()
-    const signedIn = status === 'authenticated'
-
     return (
         <div
             style={{
@@ -67,52 +63,17 @@ export default function HomePage() {
             }}
         >
             <div className="container" style={{ paddingTop: '3rem', paddingBottom: '3rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
-                    <div>
-                        <p style={{ color: '#94a3b8', letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: '0.75rem' }}>
-                            When Works
-                        </p>
-                        <h1 style={{ fontSize: '3rem', lineHeight: 1, marginTop: '0.35rem' }}>
-                            Find the best day for everyone to hang out.
-                        </h1>
-                        <p style={{ color: '#cbd5e1', maxWidth: '42rem', marginTop: '1rem', fontSize: '1.05rem' }}>
-                            Create events, share a simple link, and let people respond without forcing them to sign in.
-                            Creators can use Google, an email claim flow, or a private owner link.
-                        </p>
-                    </div>
-
-                    <div
-                        style={{
-                            minWidth: '220px',
-                            background: 'rgba(15, 23, 42, 0.9)',
-                            border: '1px solid rgba(148, 163, 184, 0.18)',
-                            borderRadius: '18px',
-                            padding: '1rem',
-                            alignSelf: 'flex-start',
-                        }}
-                    >
-                        {signedIn ? (
-                            <>
-                                <p style={{ color: '#94a3b8', fontSize: '0.8rem' }}>Signed in as</p>
-                                <p style={{ color: '#f8fafc', marginTop: '0.25rem', wordBreak: 'break-word' }}>
-                                    {session?.user?.email}
-                                </p>
-                                <button onClick={() => signOut({ callbackUrl: '/' })} className="button-secondary" style={{ marginTop: '0.85rem', width: '100%' }}>
-                                    Sign out
-                                </button>
-                            </>
-                        ) : (
-                            <>
-                                <p style={{ color: '#94a3b8', fontSize: '0.8rem' }}>Start here</p>
-                                <button onClick={() => signIn('google', { callbackUrl: '/events' })} className="button-primary" style={{ marginTop: '0.65rem', width: '100%' }}>
-                                    Continue with Google
-                                </button>
-                                <Link href="/events" className="nav-link" style={{ display: 'block', marginTop: '0.85rem' }}>
-                                    View my events
-                                </Link>
-                            </>
-                        )}
-                    </div>
+                <div>
+                    <p style={{ color: '#94a3b8', letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: '0.75rem' }}>
+                        When Works
+                    </p>
+                    <h1 style={{ fontSize: '3rem', lineHeight: 1, marginTop: '0.35rem' }}>
+                        Find the best day for everyone to hang out.
+                    </h1>
+                    <p style={{ color: '#cbd5e1', maxWidth: '42rem', marginTop: '1rem', fontSize: '1.05rem' }}>
+                        Create events, share a simple link, and let people respond without forcing them to sign in.
+                        Creators can use Google, an email claim flow, or a private owner link.
+                    </p>
                 </div>
 
                 <div

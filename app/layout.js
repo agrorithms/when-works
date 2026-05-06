@@ -1,5 +1,6 @@
 import './globals.css'
 import AppSessionProvider from '../components/SessionProvider'
+import NavBar from '../components/NavBar'
 
 export const metadata = {
   title: 'When Works',
@@ -10,7 +11,10 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body>
-        <AppSessionProvider>{children}</AppSessionProvider>
+        <AppSessionProvider>
+          <NavBar />
+          {children}
+        </AppSessionProvider>
       </body>
     </html>
   )
