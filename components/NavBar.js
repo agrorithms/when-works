@@ -81,9 +81,11 @@ export default function NavBar() {
                                         )}
                                         <span className="navbar-dropdown-email">{session.user?.email}</span>
                                     </div>
+                                    {/*
                                     <Link href="/profile" className="navbar-dropdown-item" role="menuitem" onClick={closeDropdown}>
                                         Profile
                                     </Link>
+                                    */}
                                     <Link href="/groups" className="navbar-dropdown-item" role="menuitem" onClick={closeDropdown}>
                                         My Groups
                                     </Link>

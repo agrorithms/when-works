@@ -72,7 +72,7 @@ export default function HomePage() {
                     </h1>
                     <p style={{ color: '#cbd5e1', maxWidth: '42rem', marginTop: '1rem', fontSize: '1.05rem' }}>
                         Create events, share a simple link, and let people respond without forcing them to sign in.
-                        Creators can use Google, an email claim flow, or a private owner link.
+                        Creators can sign in with Google for persistent access, or create as a guest with a private owner link saved to this browser.
                     </p>
                 </div>
 
@@ -86,7 +86,7 @@ export default function HomePage() {
                 >
                     <HeroCard
                         title="Create an event"
-                        description="Choose Google, email claim, or a private owner link."
+                        description="Sign in with Google for full access, or create as a guest with a private owner link."
                         href="/events/new"
                         primary
                     />
@@ -98,11 +98,6 @@ export default function HomePage() {
                     <HeroCard
                         title="Respond to an invite"
                         description="Open the event link you received and submit availability without signing in."
-                    />
-                    <HeroCard
-                        title="Super-admin view"
-                        description="Keep using the internal admin area for your advanced management tools."
-                        href="/admin"
                     />
                 </div>
 
@@ -124,7 +119,7 @@ export default function HomePage() {
                         <div style={{ background: '#0f172a', border: '1px solid #334155', borderRadius: '14px', padding: '1rem' }}>
                             <h3 style={{ marginBottom: '0.35rem' }}>2. Pick creator access</h3>
                             <p style={{ color: '#cbd5e1' }}>
-                                Creators can sign in with Google, claim by email later, or save a private owner link.
+                                Creators can sign in with Google for persistent access, or save a private owner link to this browser.
                             </p>
                         </div>
                         <div style={{ background: '#0f172a', border: '1px solid #334155', borderRadius: '14px', padding: '1rem' }}>

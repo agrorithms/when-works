@@ -58,6 +58,12 @@ export default function EventRespondPage() {
     const [resetSnapshot, setResetSnapshot] = useState(null)
     const [hostingRoundInfo, setHostingRoundInfo] = useState(null)
     const [hostingInfoLoading, setHostingInfoLoading] = useState(false)
+    const [profileName, setProfileName] = useState(null)
+    const [profileLoaded, setProfileLoaded] = useState(false)
+
+    const resolvedSignedInName = session?.user?.email
+        ? (profileName || session.user.name || null)
+        : null
 
     const selectedDates = mode === 'available' ? availableDates : unavailableDates
     const getAttendeeWeight = (response) => response.includes_so ? 2 : 1
@@ -72,6 +78,36 @@ export default function EventRespondPage() {
     useEffect(() => { unavailableDatesRef.current = unavailableDates }, [unavailableDates])
     useEffect(() => { responseIdRef.current = responseId }, [responseId])
     useEffect(() => { nameRef.current = name }, [name])
+    // Fetch profile name for signed-in users
+    useEffect(() => {
+        let cancelled = false
+        async function load() {
+            if (!session?.user?.email) {
+                await Promise.resolve()
+                if (!cancelled) setProfileLoaded(true)
+                return
+            }
+            try {
+                const r = await fetch('/api/settings')
+                const data = r.ok ? await r.json() : null
+                if (!cancelled) {
+                    if (data?.name) setProfileName(data.name)
+                    setProfileLoaded(true)
+                }
+            } catch {
+                if (!cancelled) setProfileLoaded(true)
+            }
+        }
+        load()
+        return () => { cancelled = true }
+    }, [session?.user?.email])
+
+    // Seed name state from profile when signed in — overrides any stale localStorage name
+    useEffect(() => {
+        if (!resolvedSignedInName) return
+        if (name === resolvedSignedInName) return
+        Promise.resolve().then(() => setName(resolvedSignedInName))
+    }, [resolvedSignedInName]) // eslint-disable-line react-hooks/exhaustive-deps
 
     // Retro-link google_email when user signs in after already having a response record
     useEffect(() => {
@@ -141,6 +177,7 @@ export default function EventRespondPage() {
     // Debounced name save — updates DB when name changes while session is active
     useEffect(() => {
         if (!responseIdRef.current || !sessionStarted) return
+        if (session?.user?.email) return
 
         if (nameTimeout.current) clearTimeout(nameTimeout.current)
 
@@ -177,7 +214,7 @@ export default function EventRespondPage() {
         return () => {
             if (nameTimeout.current) clearTimeout(nameTimeout.current)
         }
-    }, [name, sessionStarted, displayName, slug])
+    }, [name, sessionStarted, displayName, slug, session?.user?.email])
 
     useEffect(() => {
         if (!responseIdRef.current || !sessionStarted) return
@@ -277,6 +314,63 @@ export default function EventRespondPage() {
         setError('')
 
         const currentEvent = eventRef.current
+        const hydrateExisting = (prev) => {
+            setResponseId(prev.id)
+            responseIdRef.current = prev.id
+            if (pendingTogglesRef.current.length === 0) {
+                setMode(prev.response_type)
+            }
+            setConfirmed(prev.confirmed)
+            setDisplayName(prev.display_name)
+            setIncludesSO(Boolean(prev.includes_so))
+
+            if (session?.user?.email) {
+                if (resolvedSignedInName) setName(resolvedSignedInName)
+            } else if (!prev.name.startsWith('guest_')) {
+                setName(prev.display_name)
+            }
+
+            let nextAvailableDates = prev.response_type === 'available' ? (prev.dates || []) : []
+            let nextUnavailableDates = prev.response_type === 'unavailable' ? (prev.dates || []) : []
+
+            if (pendingTogglesRef.current.length > 0) {
+                for (const { dateStr, toggleMode } of pendingTogglesRef.current) {
+                    if (toggleMode === 'available') {
+                        nextAvailableDates = applyDateToggle(nextAvailableDates, dateStr)
+                    } else {
+                        nextUnavailableDates = applyDateToggle(nextUnavailableDates, dateStr)
+                    }
+                }
+            }
+
+            setAvailableDates(nextAvailableDates)
+            availableDatesRef.current = nextAvailableDates
+            setUnavailableDates(nextUnavailableDates)
+            unavailableDatesRef.current = nextUnavailableDates
+
+            localStorage.setItem(getSessionKey(slug), prev.name)
+
+            setSessionStarted(true)
+            pendingTogglesRef.current = []
+            scheduleSave()
+            sessionStarting.current = false
+        }
+
+        // Signed-in: look up existing response by google_email to prevent duplicates
+        if (session?.user?.email) {
+            const { data: byEmail } = await supabase
+                .from('responses')
+                .select('*')
+                .eq('event_id', currentEvent.id)
+                .eq('google_email', session.user.email)
+                .limit(1)
+
+            if (byEmail && byEmail.length > 0) {
+                hydrateExisting(byEmail[0])
+                return
+            }
+        }
+
         const lookupName = sessionInternalName || (sessionDisplayName ? sessionDisplayName.trim().toLowerCase() : null)
 
         if (lookupName) {
@@ -288,44 +382,7 @@ export default function EventRespondPage() {
                 .limit(1)
 
             if (existing && existing.length > 0) {
-                const prev = existing[0]
-                setResponseId(prev.id)
-                responseIdRef.current = prev.id
-                if (pendingTogglesRef.current.length === 0) {
-                    setMode(prev.response_type)
-                }
-                setConfirmed(prev.confirmed)
-                setDisplayName(prev.display_name)
-                setIncludesSO(Boolean(prev.includes_so))
-
-                if (!prev.name.startsWith('guest_')) {
-                    setName(prev.display_name)
-                }
-
-                let nextAvailableDates = prev.response_type === 'available' ? (prev.dates || []) : []
-                let nextUnavailableDates = prev.response_type === 'unavailable' ? (prev.dates || []) : []
-
-                if (pendingTogglesRef.current.length > 0) {
-                    for (const { dateStr, toggleMode } of pendingTogglesRef.current) {
-                        if (toggleMode === 'available') {
-                            nextAvailableDates = applyDateToggle(nextAvailableDates, dateStr)
-                        } else {
-                            nextUnavailableDates = applyDateToggle(nextUnavailableDates, dateStr)
-                        }
-                    }
-                }
-
-                setAvailableDates(nextAvailableDates)
-                availableDatesRef.current = nextAvailableDates
-                setUnavailableDates(nextUnavailableDates)
-                unavailableDatesRef.current = nextUnavailableDates
-
-                localStorage.setItem(getSessionKey(slug), prev.name)
-
-                setSessionStarted(true)
-                pendingTogglesRef.current = []
-                scheduleSave()
-                sessionStarting.current = false
+                hydrateExisting(existing[0])
                 return
             }
         }
@@ -372,7 +429,7 @@ export default function EventRespondPage() {
             scheduleSave()
         }
         sessionStarting.current = false
-    }, [includesSO, scheduleSave, slug, session])
+    }, [includesSO, scheduleSave, slug, session, resolvedSignedInName])
 
     const processDateToggle = useCallback((dateStr) => {
         if (resetSnapshot) {
@@ -411,33 +468,37 @@ export default function EventRespondPage() {
 
         if (!sessionStarted) {
             pendingTogglesRef.current.push({ dateStr, toggleMode: mode })
-            if (!sessionStarting.current) {
-                startSession(nameRef.current.trim() || null)
+            if (!sessionStarting.current && profileLoaded) {
+                const startName = session?.user?.email
+                    ? resolvedSignedInName
+                    : (nameRef.current.trim() || null)
+                startSession(startName)
             }
         }
 
         processDateToggle(dateStr)
-    }, [mode, sessionStarted, startSession, processDateToggle])
+    }, [mode, sessionStarted, startSession, processDateToggle, profileLoaded, session?.user?.email, resolvedSignedInName])
 
     // Auto-start session
     useEffect(() => {
-        if (!event || sessionStarted || sessionStarting.current) return
+        if (!event || sessionStarted || sessionStarting.current || !profileLoaded) return
 
         const timeoutId = setTimeout(() => {
+            if (session?.user?.email) {
+                startSession(resolvedSignedInName)
+                return
+            }
             const sessionName = localStorage.getItem(getSessionKey(slug))
             if (sessionName) {
                 startSession(null, sessionName)
                 return
             }
-
             const savedName = localStorage.getItem(NAME_STORAGE_KEY)
-            if (savedName) {
-                startSession(savedName)
-            }
+            if (savedName) startSession(savedName)
         }, 0)
 
         return () => clearTimeout(timeoutId)
-    }, [event, sessionStarted, slug, startSession])
+    }, [event, sessionStarted, slug, startSession, profileLoaded, session?.user?.email, resolvedSignedInName])
 
     const handleModeChange = () => {
         const newMode = mode === 'available' ? 'unavailable' : 'available'
@@ -470,7 +531,7 @@ export default function EventRespondPage() {
             confirmed: true
         }
 
-        if (trimmedName) {
+        if (trimmedName && !session?.user?.email) {
             updateData.display_name = trimmedName
             updateData.name = trimmedName.toLowerCase()
             localStorage.setItem(getSessionKey(slug), trimmedName.toLowerCase())
@@ -688,7 +749,7 @@ export default function EventRespondPage() {
                 </p>
                 {includesSO && (
                     <p style={{ color: '#94a3b8', marginTop: '0.25rem', fontSize: '0.9rem' }}>
-                        👥 Submitted for both you and your SO
+                        👥 Submitted for both you and your +1
                     </p>
                 )}
 
@@ -804,12 +865,9 @@ export default function EventRespondPage() {
                 </div>
             </div>
 
-            {/* Name field — always editable */}
-            <div style={{
-                display: 'flex', alignItems: 'center', gap: '0.75rem',
-                marginBottom: '0.9rem',
-            }}>
-                <div style={{ flex: 1 }}>
+            {/* Name field — only shown when not signed in */}
+            {!session?.user?.email && (
+                <div style={{ marginBottom: '0.9rem' }}>
                     <input
                         type="text"
                         className="input-field"
@@ -820,25 +878,7 @@ export default function EventRespondPage() {
                     />
                 </div>
 
-                {(sessionStarted || hasUndoOption) && (
-                    <button
-                        onClick={hasUndoOption ? handleUndoReset : handleReset}
-                        style={{
-                            background: '#334155', color: '#94a3b8', border: 'none',
-                            minHeight: '42px',
-                            padding: '0.42rem 0.85rem',
-                            borderRadius: '10px',
-                            cursor: 'pointer',
-                            fontSize: '0.9rem',
-                            whiteSpace: 'nowrap',
-                            display: 'flex',
-                            alignItems: 'center'
-                        }}
-                    >
-                        {hasUndoOption ? 'Undo' : 'Reset'}
-                    </button>
-                )}
-            </div>
+            )}
 
             <div style={{
                 display: 'flex',
@@ -846,34 +886,36 @@ export default function EventRespondPage() {
                 flexWrap: 'wrap',
                 marginBottom: '.9rem'
             }}>
-                <label style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.55rem',
-                    cursor: 'pointer',
-                    padding: '0.42rem 0.85rem',
-                    borderRadius: '10px',
-                    background: '#1e293b',
-                    border: '2px solid #334155',
-                    flex: '1 1 260px',
-                    minHeight: '42px'
-                }}>
-                    <input
-                        type="checkbox"
-                        checked={includesSO}
-                        onChange={(e) => setIncludesSO(e.target.checked)}
-                        style={{
-                            width: '16px',
-                            height: '16px',
-                            accentColor: '#6366f1',
-                            cursor: 'pointer',
-                            flexShrink: 0
-                        }}
-                    />
-                    <span style={{ color: '#e2e8f0', fontSize: '0.9rem', lineHeight: 1.25 }}>
-                        I&apos;m submitting for me and my SO
-                    </span>
-                </label>
+                {event.allow_plus_one && (
+                    <label style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.55rem',
+                        cursor: 'pointer',
+                        padding: '0.42rem 0.85rem',
+                        borderRadius: '10px',
+                        background: '#1e293b',
+                        border: '2px solid #334155',
+                        flex: '1 1 260px',
+                        minHeight: '42px'
+                    }}>
+                        <input
+                            type="checkbox"
+                            checked={includesSO}
+                            onChange={(e) => setIncludesSO(e.target.checked)}
+                            style={{
+                                width: '16px',
+                                height: '16px',
+                                accentColor: '#6366f1',
+                                cursor: 'pointer',
+                                flexShrink: 0
+                            }}
+                        />
+                        <span style={{ color: '#e2e8f0', fontSize: '0.9rem', lineHeight: 1.25 }}>
+                            I&apos;m submitting for me and a +1
+                        </span>
+                    </label>
+                )}
 
                 <button
                     type="button"
@@ -927,6 +969,24 @@ export default function EventRespondPage() {
                         }} />
                     </span>
                 </button>
+                {(sessionStarted || hasUndoOption) && (
+                    <button
+                        onClick={hasUndoOption ? handleUndoReset : handleReset}
+                        style={{
+                            background: '#334155', color: '#94a3b8', border: 'none',
+                            minHeight: '42px',
+                            padding: '0.42rem 0.85rem',
+                            borderRadius: '10px',
+                            cursor: 'pointer',
+                            fontSize: '0.9rem',
+                            whiteSpace: 'nowrap',
+                            display: 'flex',
+                            alignItems: 'center'
+                        }}
+                    >
+                        {hasUndoOption ? 'Undo' : 'Reset'}
+                    </button>
+                )}
             </div>
 
             {error && <p style={{ color: '#ef4444', margin: '0 0 1rem 0' }}>{error}</p>}
@@ -1014,7 +1074,7 @@ export default function EventRespondPage() {
             )}
 
             {/* Anonymous indicator */}
-            {sessionStarted && !name.trim() && (
+            {sessionStarted && !name.trim() && !session?.user?.email && (
                 <div style={{
                     background: '#1e3a2f',
                     border: '2px solid #10b981',

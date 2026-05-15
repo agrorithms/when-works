@@ -227,7 +227,7 @@ export default function EventsDashboardPage() {
                         <div>
                             <h2 style={{ color: '#f8fafc', marginBottom: '0.25rem' }}>Created by you</h2>
                             <p style={{ color: '#94a3b8' }}>
-                                Events you created with Google sign-in or claimed with a matching email.
+                                Events you created with Google sign-in or via a saved owner link.
                             </p>
                         </div>
                     </div>

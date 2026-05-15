@@ -1,9 +1,10 @@
 'use client'
 
 import Link from 'next/link'
-import { useMemo, useState } from 'react'
-import { signIn, useSession } from 'next-auth/react'
+import { useEffect, useMemo, useState } from 'react'
+import { useSession } from 'next-auth/react'
 import AdminCalendar from '../../../components/AdminCalendar'
+import { saveOwnerToken } from '../../../lib/savedOwnerTokens'
 
 function generateSlug(title) {
     return title
@@ -25,7 +26,6 @@ export default function NewEventPage() {
     const { status, data: session } = useSession()
     const signedIn = status === 'authenticated'
 
-    const [accessMode, setAccessMode] = useState(signedIn ? 'google' : 'link')
     const [newTitle, setNewTitle] = useState('')
     const [newDescription, setNewDescription] = useState('')
     const [newSlug, setNewSlug] = useState('')
@@ -34,14 +34,14 @@ export default function NewEventPage() {
     const [newResponseDeadline, setNewResponseDeadline] = useState('')
     const [newBlockedDates, setNewBlockedDates] = useState([])
     const [showAvailabilityCounts, setShowAvailabilityCounts] = useState(false)
-    const [guestEmail, setGuestEmail] = useState('')
+    const [allowPlusOne, setAllowPlusOne] = useState(false)
     const [createError, setCreateError] = useState('')
     const [createLoading, setCreateLoading] = useState(false)
     const [created, setCreated] = useState(false)
     const [createdEvent, setCreatedEvent] = useState(null)
 
     const today = getToday()
-    const effectiveAccessMode = signedIn ? 'google' : accessMode
+    const accessMode = signedIn ? 'google' : 'link'
 
     const titlePlaceholder = useMemo(() => 'e.g. Summer BBQ, Game Night...', [])
 
@@ -124,13 +124,8 @@ export default function NewEventPage() {
         if (newResponseDeadline < today) return setCreateError('Response deadline must be in the future.')
         if (newResponseDeadline > newEndDate) return setCreateError('Response deadline must be on or before event end date.')
 
-        if (effectiveAccessMode === 'google' && !signedIn) {
+        if (accessMode === 'google' && !signedIn) {
             setCreateError('Please sign in with Google first.')
-            return
-        }
-
-        if (effectiveAccessMode === 'email' && !guestEmail.trim()) {
-            setCreateError('Please enter the email address that should claim this event later.')
             return
         }
 
@@ -149,8 +144,9 @@ export default function NewEventPage() {
                 response_deadline: newResponseDeadline,
                 blocked_dates: newBlockedDates,
                 show_availability_counts: showAvailabilityCounts,
-                access_mode: effectiveAccessMode,
-                owner_email: !signedIn && effectiveAccessMode === 'email' ? guestEmail.trim() : null,
+                allow_plus_one: allowPlusOne,
+                access_mode: accessMode,
+                owner_email: null,
             }),
         })
 
@@ -166,6 +162,13 @@ export default function NewEventPage() {
         setCreated(true)
         setCreateLoading(false)
     }
+
+    useEffect(() => {
+        if (created && createdEvent?.manageLink) {
+            const token = createdEvent.manageLink.split('/').pop()
+            if (token) saveOwnerToken(token)
+        }
+    }, [created, createdEvent])
 
     if (created && createdEvent) {
         return (
@@ -237,46 +240,12 @@ export default function NewEventPage() {
                         </div>
                     ) : (
                         <div style={{ background: '#111827', border: '1px solid #334155', borderRadius: '12px', padding: '1rem', marginBottom: '1rem' }}>
-                            <p style={{ color: '#cbd5e1', marginBottom: '0.75rem' }}>
-                                Want durable access across devices? Sign in with Google, or create as a guest and save a private owner link.
+                            <p style={{ color: '#cbd5e1', marginBottom: '0.5rem' }}>
+                                A private owner link will be generated and saved to this browser so you can manage the event.
                             </p>
-                            <button onClick={() => signIn('google', { callbackUrl: '/events/new' })} className="button-primary">
-                                Continue with Google
-                            </button>
-                        </div>
-                    )}
-
-                    {!signedIn && (
-                        <div style={{ display: 'grid', gap: '0.75rem', marginBottom: '1.1rem' }}>
-                            <label style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start', padding: '0.9rem', background: '#111827', border: effectiveAccessMode === 'email' ? '2px solid #6366f1' : '1px solid #334155', borderRadius: '12px', cursor: 'pointer' }}>
-                                <input
-                                    type="radio"
-                                    checked={effectiveAccessMode === 'email'}
-                                    onChange={() => setAccessMode('email')}
-                                    style={{ marginTop: '0.15rem' }}
-                                />
-                                <div>
-                                    <h3 style={{ marginBottom: '0.2rem' }}>Guest with email claim</h3>
-                                    <p style={{ color: '#94a3b8' }}>
-                                        You can create the event now, then later claim it by signing in with the same Google email.
-                                    </p>
-                                </div>
-                            </label>
-
-                            <label style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start', padding: '0.9rem', background: '#111827', border: effectiveAccessMode === 'link' ? '2px solid #6366f1' : '1px solid #334155', borderRadius: '12px', cursor: 'pointer' }}>
-                                <input
-                                    type="radio"
-                                    checked={effectiveAccessMode === 'link'}
-                                    onChange={() => setAccessMode('link')}
-                                    style={{ marginTop: '0.15rem' }}
-                                />
-                                <div>
-                                    <h3 style={{ marginBottom: '0.2rem' }}>Guest with private owner link</h3>
-                                    <p style={{ color: '#94a3b8' }}>
-                                        The app will generate a private link you must keep to reopen the owner page later.
-                                    </p>
-                                </div>
-                            </label>
+                            <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginBottom: '0.1rem' }}>
+                                Tip: sign in with Google (top-right) to keep all your events together across devices.
+                            </p>
                         </div>
                     )}
 
@@ -297,21 +266,6 @@ export default function NewEventPage() {
                         <span style={{ color: '#64748b', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>/respond/</span>
                         <input type="text" className="input-field" placeholder="event-name" value={newSlug} onChange={(e) => setNewSlug(e.target.value.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-'))} style={{ marginBottom: 0 }} />
                     </div>
-
-                    {!signedIn && effectiveAccessMode === 'email' && (
-                        <>
-                            <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
-                                Claim email *
-                            </label>
-                            <input
-                                type="email"
-                                className="input-field"
-                                placeholder="the-email-that-will-own-this-event@example.com"
-                                value={guestEmail}
-                                onChange={(e) => setGuestEmail(e.target.value)}
-                            />
-                        </>
-                    )}
 
                     <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
                         Event Date Range *
@@ -337,6 +291,16 @@ export default function NewEventPage() {
                         max={deadlineMax}
                     />
 
+                    <label style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', marginTop: '1rem', marginBottom: '0.6rem', color: '#e2e8f0' }}>
+                        <input type="checkbox" checked={showAvailabilityCounts} onChange={(e) => setShowAvailabilityCounts(e.target.checked)} />
+                        Show availability counts to invitees
+                    </label>
+
+                    <label style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', marginBottom: '1rem', color: '#e2e8f0' }}>
+                        <input type="checkbox" checked={allowPlusOne} onChange={(e) => setAllowPlusOne(e.target.checked)} />
+                        Allow attendees to include a +1 in their response
+                    </label>
+
                     <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
                         Blocked Dates
                     </label>
@@ -349,11 +313,6 @@ export default function NewEventPage() {
                         blockedDates={newBlockedDates}
                         onToggleBlocked={toggleBlockedDate}
                     />
-
-                    <label style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', marginTop: '1rem', marginBottom: '1rem', color: '#e2e8f0' }}>
-                        <input type="checkbox" checked={showAvailabilityCounts} onChange={(e) => setShowAvailabilityCounts(e.target.checked)} />
-                        Show availability counts to invitees
-                    </label>
 
                     {createError && (
                         <p style={{ color: '#fca5a5', marginBottom: '0.75rem' }}>{createError}</p>

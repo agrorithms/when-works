@@ -144,6 +144,7 @@ export async function POST(request) {
     const responseDeadline = body.response_deadline
     const blockedDates = Array.isArray(body.blocked_dates) ? body.blocked_dates : []
     const showAvailabilityCounts = Boolean(body.show_availability_counts)
+    const allowPlusOne = Boolean(body.allow_plus_one)
     const accessMode = body.access_mode
     const ownerEmail = normalizeEmail(body.owner_email)
 
@@ -151,16 +152,12 @@ export async function POST(request) {
         return Response.json({ error: 'Missing required fields.' }, { status: 400 })
     }
 
-    if (!['google', 'email', 'link'].includes(accessMode)) {
+    if (!['google', 'link'].includes(accessMode)) {
         return Response.json({ error: 'Invalid access mode.' }, { status: 400 })
     }
 
     if (accessMode === 'google' && !session?.user?.id) {
         return Response.json({ error: 'Please sign in with Google to create an event this way.' }, { status: 401 })
-    }
-
-    if (accessMode === 'email' && !ownerEmail) {
-        return Response.json({ error: 'Please provide an email address.' }, { status: 400 })
     }
 
     const { data: eventData, error: eventError } = await supabaseAdmin
@@ -174,6 +171,7 @@ export async function POST(request) {
             response_deadline: responseDeadline,
             blocked_dates: blockedDates,
             show_availability_counts: showAvailabilityCounts,
+            allow_plus_one: allowPlusOne,
         })
         .select()
         .single()
