@@ -41,4 +41,7 @@ yarn-error.log*
 next-env.d.ts
 
 #supabase_sql
-/supabase_sql_editor.sql    
+/supabase_sql_editor.sql
+/supabase/
+#claude
+.claude/
