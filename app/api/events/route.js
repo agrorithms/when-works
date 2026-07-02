@@ -2,13 +2,10 @@ import crypto from 'crypto'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '../../../lib/auth'
 import { getSupabaseAdmin } from '../../../lib/supabaseAdmin'
+import { normalizeEmail } from '../../../lib/ownership'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
-
-function normalizeEmail(email) {
-    return email ? email.trim().toLowerCase() : null
-}
 
 function makeManageToken() {
     return crypto.randomBytes(16).toString('hex')

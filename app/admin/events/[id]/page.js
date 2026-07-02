@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
+import { useAdmin } from '../../layout'
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
@@ -14,6 +15,11 @@ export default function EventDetailPage({
 } = {}) {
     const params = useParams()
     const eventRef = eventRefProp || params.id
+
+    // Present only when rendered inside the admin layout; grants event access
+    // via the server-checked admin override instead of ownership.
+    const admin = useAdmin()
+    const adminPassword = admin?.adminPassword || null
 
     const [event, setEvent] = useState(null)
     const [responses, setResponses] = useState([])
@@ -51,7 +57,9 @@ export default function EventDetailPage({
             return
         }
 
-        const response = await fetch(`/api/events/manage/${eventRef}`)
+        const response = await fetch(`/api/events/manage/${eventRef}`, {
+            headers: adminPassword ? { 'x-admin-password': adminPassword } : {},
+        })
         const payload = await response.json()
 
         if (!response.ok) {
@@ -71,7 +79,7 @@ export default function EventDetailPage({
         setFollowupAnswers(payload.followupAnswers || [])
         setLoading(false)
         if (onLoaded) onLoaded(payload)
-    }, [eventRef, onLoaded])
+    }, [eventRef, onLoaded, adminPassword])
 
     useEffect(() => {
         const timeoutId = setTimeout(fetchData, 0)
@@ -392,6 +400,7 @@ export default function EventDetailPage({
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                ...(adminPassword ? { 'x-admin-password': adminPassword } : {}),
             },
             body: JSON.stringify({
                 action: 'toggle_shortlist',
@@ -416,7 +425,10 @@ export default function EventDetailPage({
 
         const res = await fetch(`/api/events/manage/${eventRef}/calendar`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                ...(adminPassword ? { 'x-admin-password': adminPassword } : {}),
+            },
             body: JSON.stringify({ selectedDate, startTime, timezone }),
         })
 
@@ -460,6 +472,7 @@ export default function EventDetailPage({
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                ...(adminPassword ? { 'x-admin-password': adminPassword } : {}),
             },
             body: JSON.stringify({
                 action: 'create_hosting_round',

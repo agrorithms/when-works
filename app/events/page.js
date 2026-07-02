@@ -3,7 +3,6 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSession } from 'next-auth/react'
-import { supabase } from '../../lib/supabase'
 
 const SAVED_INVITES_KEY = 'when_works_saved_invites'
 const SAVED_OWNER_TOKENS_KEY = 'when_works_saved_owner_tokens'
@@ -103,24 +102,16 @@ export default function EventsDashboardPage() {
             const nextSavedOwnerTokens = readStorageArray(SAVED_OWNER_TOKENS_KEY)
 
             const inviteRequests = nextSavedInvites.map(async (slug) => {
-                const { data } = await supabase
-                    .from('events')
-                    .select('*')
-                    .eq('slug', slug)
-                    .limit(1)
+                const response = await fetch(`/api/respond/${slug}`)
+                if (!response.ok) return null
 
-                if (!data || data.length === 0) return null
-
-                const event = data[0]
-                const { data: responses } = await supabase
-                    .from('responses')
-                    .select('id, confirmed')
-                    .eq('event_id', event.id)
+                const data = await response.json()
+                if (!data?.event) return null
 
                 return {
-                    ...event,
-                    responseCount: responses?.length || 0,
-                    confirmedCount: responses?.filter((response) => response.confirmed).length || 0,
+                    ...data.event,
+                    responseCount: data.responseCount || 0,
+                    confirmedCount: data.confirmedCount || 0,
                 }
             })
 

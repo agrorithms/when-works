@@ -1,28 +1,27 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { supabase } from '../../../lib/supabase'
 import Link from 'next/link'
+import { useAdmin } from '../layout'
 
 export default function EventsListPage() {
+    const admin = useAdmin()
+    const adminPassword = admin?.adminPassword
     const [events, setEvents] = useState([])
-    const [responses, setResponses] = useState([])
     const [loading, setLoading] = useState(true)
 
     const fetchData = useCallback(async () => {
-        const { data: eventsData } = await supabase
-            .from('events')
-            .select('*')
-            .order('created_at', { ascending: false })
-
-        const { data: responsesData } = await supabase
-            .from('responses')
-            .select('id, event_id, confirmed, includes_so')
-
-        setEvents(eventsData || [])
-        setResponses(responsesData || [])
+        try {
+            const res = await fetch('/api/admin/events', {
+                headers: { 'x-admin-password': adminPassword || '' },
+            })
+            const data = res.ok ? await res.json() : null
+            setEvents(data?.events || [])
+        } catch {
+            setEvents([])
+        }
         setLoading(false)
-    }, [])
+    }, [adminPassword])
 
     useEffect(() => {
         const timeoutId = setTimeout(fetchData, 0)
@@ -83,7 +82,7 @@ export default function EventsListPage() {
                 </div>
             ) : (
                 events.map(event => {
-                    const eventResponses = responses.filter(r => r.event_id === event.id)
+                    const eventResponses = event.responses || []
                     const confirmedAttendees = eventResponses
                         .filter(r => r.confirmed)
                         .reduce((sum, r) => sum + getAttendeeWeight(r), 0)

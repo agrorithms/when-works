@@ -2,7 +2,6 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { supabase } from '../../../lib/supabase'
 import AdminCalendar from '../../../components/AdminCalendar'
 import Link from 'next/link'
 
@@ -21,6 +20,7 @@ export default function CreateEventPage() {
     const [createLoading, setCreateLoading] = useState(false)
     const [created, setCreated] = useState(false)
     const [createdSlug, setCreatedSlug] = useState('')
+    const [createdManageLink, setCreatedManageLink] = useState('')
 
     const getToday = () => {
         const now = new Date()
@@ -135,28 +135,33 @@ export default function CreateEventPage() {
         setCreateLoading(true)
         setCreateError('')
 
-        const { error } = await supabase
-            .from('events')
-            .insert({
-                title: newTitle.trim(),
-                description: newDescription.trim() || null,
-                slug: newSlug.trim(),
-                date_range_start: newStartDate,
-                date_range_end: newEndDate,
-                response_deadline: newResponseDeadline,
-                blocked_dates: newBlockedDates,
-                show_availability_counts: showAvailabilityCounts
+        try {
+            const res = await fetch('/api/events', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    title: newTitle.trim(),
+                    description: newDescription.trim() || null,
+                    slug: newSlug.trim(),
+                    date_range_start: newStartDate,
+                    date_range_end: newEndDate,
+                    response_deadline: newResponseDeadline,
+                    blocked_dates: newBlockedDates,
+                    show_availability_counts: showAvailabilityCounts,
+                    access_mode: 'link',
+                }),
             })
+            const data = await res.json().catch(() => ({}))
 
-        if (error) {
-            if (error.code === '23505') {
-                setCreateError('That URL slug is already taken. Try a different one.')
+            if (!res.ok) {
+                setCreateError(data.error || 'Something went wrong.')
             } else {
-                setCreateError('Something went wrong: ' + error.message)
+                setCreatedSlug(newSlug.trim())
+                setCreatedManageLink(data.event?.manageLink || '')
+                setCreated(true)
             }
-        } else {
-            setCreatedSlug(newSlug.trim())
-            setCreated(true)
+        } catch {
+            setCreateError('Something went wrong. Please try again.')
         }
 
         setCreateLoading(false)
@@ -190,6 +195,17 @@ export default function CreateEventPage() {
                     >
                         📋 Copy Link
                     </button>
+
+                    {createdManageLink && (
+                        <>
+                            <p style={{ color: '#64748b', fontSize: '0.75rem', margin: '1rem 0 0.25rem' }}>
+                                Private owner link (manage the event without the admin dashboard):
+                            </p>
+                            <p style={{ color: '#6366f1', fontSize: '0.95rem', wordBreak: 'break-all' }}>
+                                {typeof window !== 'undefined' ? `${window.location.origin}${createdManageLink}` : createdManageLink}
+                            </p>
+                        </>
+                    )}
                 </div>
 
                 <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', marginTop: '1.5rem' }}>
@@ -200,6 +216,7 @@ export default function CreateEventPage() {
                         style={{ cursor: 'pointer' }}
                         onClick={() => {
                             setCreated(false)
+                            setCreatedManageLink('')
                             setNewTitle('')
                             setNewDescription('')
                             setNewSlug('')
