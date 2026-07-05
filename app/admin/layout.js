@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, createContext, useContext } from 'react'
-import Link from 'next/link'
 
 const AdminContext = createContext(null)
 
@@ -9,27 +8,43 @@ export function useAdmin() {
     return useContext(AdminContext)
 }
 
+const ADMIN_PASSWORD_STORAGE_KEY = 'admin_password'
+
 export default function AdminLayout({ children }) {
-    const [authenticated, setAuthenticated] = useState(() => {
-        if (typeof window === 'undefined') return false
-        return sessionStorage.getItem('admin_auth') === 'true'
+    const [adminPassword, setAdminPassword] = useState(() => {
+        if (typeof window === 'undefined') return null
+        return sessionStorage.getItem(ADMIN_PASSWORD_STORAGE_KEY) || null
     })
     const [password, setPassword] = useState('')
     const [authError, setAuthError] = useState('')
+    const [checking, setChecking] = useState(false)
 
-    const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || 'changeme'
+    const handleLogin = async () => {
+        if (!password || checking) return
+        setChecking(true)
+        setAuthError('')
 
-    const handleLogin = () => {
-        if (password === ADMIN_PASSWORD) {
-            setAuthenticated(true)
-            sessionStorage.setItem('admin_auth', 'true')
-            setAuthError('')
-        } else {
-            setAuthError('Wrong password.')
+        try {
+            const res = await fetch('/api/admin/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password }),
+            })
+
+            if (res.ok) {
+                sessionStorage.setItem(ADMIN_PASSWORD_STORAGE_KEY, password)
+                setAdminPassword(password)
+            } else {
+                setAuthError('Wrong password.')
+            }
+        } catch {
+            setAuthError('Could not verify the password. Try again.')
         }
+
+        setChecking(false)
     }
 
-    if (!authenticated) {
+    if (!adminPassword) {
         return (
             <div className="container" style={{ paddingTop: '4rem' }}>
                 <h1>👑 Admin Dashboard</h1>
@@ -43,13 +58,15 @@ export default function AdminLayout({ children }) {
                     onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
                 />
                 {authError && <p style={{ color: '#ef4444', margin: '0.5rem 0' }}>{authError}</p>}
-                <button className="submit-btn" onClick={handleLogin}>Enter</button>
+                <button className="submit-btn" onClick={handleLogin} disabled={checking}>
+                    {checking ? 'Checking...' : 'Enter'}
+                </button>
             </div>
         )
     }
 
     return (
-        <AdminContext.Provider value={{ authenticated }}>
+        <AdminContext.Provider value={{ authenticated: true, adminPassword }}>
             {children}
         </AdminContext.Provider>
     )

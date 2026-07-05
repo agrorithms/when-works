@@ -2,7 +2,7 @@
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
-function AdminMonthGrid({ year, month, startDate, endDate, blockedDates, onToggleBlocked }) {
+function AdminMonthGrid({ year, month, startDate, endDate, blockedDates, onToggleBlocked = () => {} }) {
     const firstDay = new Date(year, month, 1).getDay()
     const daysInMonth = new Date(year, month + 1, 0).getDate()
     const monthName = new Date(year, month, 1).toLocaleString('default', { month: 'long', year: 'numeric' })
@@ -74,7 +74,14 @@ function AdminMonthGrid({ year, month, startDate, endDate, blockedDates, onToggl
     )
 }
 
-export default function AdminCalendar({ startDate, endDate, blockedDates, onToggleBlocked }) {
+export default function AdminCalendar({ startDate, endDate, blockedDates, onToggleBlocked, onToggleDate }) {
+    const handleToggleBlocked =
+        typeof onToggleBlocked === 'function'
+            ? onToggleBlocked
+            : typeof onToggleDate === 'function'
+                ? onToggleDate
+                : () => {}
+
     const getMonthsInRange = () => {
         if (!startDate || !endDate) return []
 
@@ -107,7 +114,7 @@ export default function AdminCalendar({ startDate, endDate, blockedDates, onTogg
                     startDate={startDate}
                     endDate={endDate}
                     blockedDates={blockedDates}
-                    onToggleBlocked={onToggleBlocked}
+                    onToggleBlocked={handleToggleBlocked}
                 />
             ))}
         </div>

@@ -2,14 +2,24 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useParams } from 'next/navigation'
-import { supabase } from '../../../../lib/supabase'
 import Link from 'next/link'
+import { useAdmin } from '../../layout'
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
-export default function EventDetailPage() {
+export default function EventDetailPage({
+    eventRef: eventRefProp,
+    backHref = '/admin/events',
+    backLabel = '← Back to Events',
+    onLoaded,
+} = {}) {
     const params = useParams()
-    const eventId = params.id
+    const eventRef = eventRefProp || params.id
+
+    // Present only when rendered inside the admin layout; grants event access
+    // via the server-checked admin override instead of ownership.
+    const admin = useAdmin()
+    const adminPassword = admin?.adminPassword || null
 
     const [event, setEvent] = useState(null)
     const [responses, setResponses] = useState([])
@@ -18,6 +28,7 @@ export default function EventDetailPage() {
     const [followupAnswers, setFollowupAnswers] = useState([])
     const [loading, setLoading] = useState(true)
     const [notFound, setNotFound] = useState(false)
+    const [error, setError] = useState('')
 
     const [tab, setTab] = useState('overview')
     const [showUnconfirmed, setShowUnconfirmed] = useState(false)
@@ -33,56 +44,42 @@ export default function EventDetailPage() {
     const [hoveredSuggestedDate, setHoveredSuggestedDate] = useState('')
     const [pinnedSuggestedDate, setPinnedSuggestedDate] = useState('')
 
-    const fetchData = useCallback(async () => {
-        const { data: eventData, error: eventError } = await supabase
-            .from('events')
-            .select('*')
-            .eq('id', eventId)
-            .limit(1)
+    const [calendarTarget, setCalendarTarget] = useState(null)
+    const [calendarTimeInput, setCalendarTimeInput] = useState('')
+    const [calendarLoading, setCalendarLoading] = useState(false)
+    const [calendarResult, setCalendarResult] = useState(null)
+    const [calendarError, setCalendarError] = useState('')
 
-        if (eventError || !eventData || eventData.length === 0) {
+    const fetchData = useCallback(async () => {
+        if (!eventRef) {
             setNotFound(true)
             setLoading(false)
             return
         }
 
-        const { data: responsesData } = await supabase
-            .from('responses')
-            .select('*')
-            .eq('event_id', eventId)
-            .order('created_at', { ascending: true })
+        const response = await fetch(`/api/events/manage/${eventRef}`, {
+            headers: adminPassword ? { 'x-admin-password': adminPassword } : {},
+        })
+        const payload = await response.json()
 
-        const { data: followupsData } = await supabase
-            .from('event_followups')
-            .select('*')
-            .eq('event_id', eventId)
-            .order('created_at', { ascending: false })
-
-        const followupIds = (followupsData || []).map(f => f.id)
-        let invitesData = []
-        let answersData = []
-
-        if (followupIds.length > 0) {
-            const { data: fetchedInvites } = await supabase
-                .from('event_followup_invites')
-                .select('*')
-                .in('followup_id', followupIds)
-            invitesData = fetchedInvites || []
-
-            const { data: fetchedAnswers } = await supabase
-                .from('event_followup_answers')
-                .select('*')
-                .in('followup_id', followupIds)
-            answersData = fetchedAnswers || []
+        if (!response.ok) {
+            if (response.status === 404) {
+                setNotFound(true)
+            } else {
+                setError(payload.error || 'Failed to load event.')
+            }
+            setLoading(false)
+            return
         }
 
-        setEvent(eventData[0])
-        setResponses(responsesData || [])
-        setFollowups(followupsData || [])
-        setFollowupInvites(invitesData)
-        setFollowupAnswers(answersData)
+        setEvent(payload.event)
+        setResponses(payload.responses || [])
+        setFollowups(payload.followups || [])
+        setFollowupInvites(payload.followupInvites || [])
+        setFollowupAnswers(payload.followupAnswers || [])
         setLoading(false)
-    }, [eventId])
+        if (onLoaded) onLoaded(payload)
+    }, [eventRef, onLoaded, adminPassword])
 
     useEffect(() => {
         const timeoutId = setTimeout(fetchData, 0)
@@ -91,6 +88,8 @@ export default function EventDetailPage() {
 
     const handleRefresh = () => {
         setLoading(true)
+        setError('')
+        setNotFound(false)
         fetchData()
     }
 
@@ -395,18 +394,53 @@ export default function EventDetailPage() {
 
     const toggleShortlist = async (invite) => {
         const nextValue = !invite.is_shortlisted
-        const { error } = await supabase
-            .from('event_followup_invites')
-            .update({ is_shortlisted: nextValue })
-            .eq('id', invite.id)
+        if (!eventRef) return
 
-        if (error) return
+        const response = await fetch(`/api/events/manage/${eventRef}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(adminPassword ? { 'x-admin-password': adminPassword } : {}),
+            },
+            body: JSON.stringify({
+                action: 'toggle_shortlist',
+                inviteId: invite.id,
+                isShortlisted: nextValue,
+            }),
+        })
+
+        if (!response.ok) return
 
         setFollowupInvites(prev => prev.map(i => (
             i.id === invite.id
                 ? { ...i, is_shortlisted: nextValue }
                 : i
         )))
+    }
+
+    const handleCreateCalendarEvent = async (selectedDate, startTime, timezone) => {
+        setCalendarLoading(true)
+        setCalendarError('')
+        setCalendarResult(null)
+
+        const res = await fetch(`/api/events/manage/${eventRef}/calendar`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(adminPassword ? { 'x-admin-password': adminPassword } : {}),
+            },
+            body: JSON.stringify({ selectedDate, startTime, timezone }),
+        })
+
+        const payload = await res.json()
+        setCalendarLoading(false)
+
+        if (!res.ok) {
+            setCalendarError(payload.error === 'no_access_token' ? 'sign_in_required' : (payload.error || 'Could not create calendar event.'))
+            return
+        }
+
+        setCalendarResult(payload)
     }
 
     const handleGenerateHostingRound = async () => {
@@ -426,51 +460,37 @@ export default function EventDetailPage() {
             return
         }
 
-        const eligibleResponses = responses.filter(r => isResponseAvailableOnDate(r, selectedHostingDate))
-        if (eligibleResponses.length === 0) {
-            setHostingError('No responders are available on that date yet.')
-            return
-        }
-
         setHostingGenerationLoading(true)
 
-        const { data: round, error: roundError } = await supabase
-            .from('event_followups')
-            .insert({
-                event_id: eventId,
-                selected_date: selectedHostingDate,
-                status: 'open'
-            })
-            .select('*')
-            .single()
-
-        if (roundError || !round) {
+        if (!eventRef) {
             setHostingGenerationLoading(false)
-            setHostingError('Could not create hosting round. ' + (roundError?.message || ''))
+            setHostingError('Missing event reference.')
             return
         }
 
-        const inviteRows = eligibleResponses.map(r => ({
-            followup_id: round.id,
-            response_id: r.id,
-            invited_display_name: r.display_name,
-            invited_includes_so: Boolean(r.includes_so)
-        }))
+        const response = await fetch(`/api/events/manage/${eventRef}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(adminPassword ? { 'x-admin-password': adminPassword } : {}),
+            },
+            body: JSON.stringify({
+                action: 'create_hosting_round',
+                selectedDate: selectedHostingDate,
+            }),
+        })
 
-        const { error: inviteError } = await supabase
-            .from('event_followup_invites')
-            .insert(inviteRows)
+        const payload = await response.json()
 
-        if (inviteError) {
+        if (!response.ok) {
             setHostingGenerationLoading(false)
-            setHostingError('Round created, but invite creation failed: ' + inviteError.message)
-            await fetchData()
+            setHostingError(payload.error || 'Could not create hosting round.')
             return
         }
 
         setHostingGenerationLoading(false)
-        setExpandedRoundId(round.id)
-        setHostingSuccess(`Created hosting round and ${inviteRows.length} tokenized invite links.`)
+        setExpandedRoundId(payload.round?.id || null)
+        setHostingSuccess(`Created hosting round and ${payload.inviteCount || 0} tokenized invite links.`)
         await fetchData()
     }
 
@@ -487,8 +507,20 @@ export default function EventDetailPage() {
             <div className="container" style={{ textAlign: 'center', paddingTop: '4rem' }}>
                 <h1>😕</h1>
                 <h1>Event Not Found</h1>
-                <Link href="/admin/events" className="nav-link" style={{ display: 'block', marginTop: '2rem' }}>
-                    ← Back to Events
+                <Link href={backHref} className="nav-link" style={{ display: 'block', marginTop: '2rem' }}>
+                    {backLabel}
+                </Link>
+            </div>
+        )
+    }
+
+    if (error) {
+        return (
+            <div className="container" style={{ textAlign: 'center', paddingTop: '4rem' }}>
+                <h1>😕</h1>
+                <h1>{error}</h1>
+                <Link href={backHref} className="nav-link" style={{ display: 'block', marginTop: '2rem' }}>
+                    {backLabel}
                 </Link>
             </div>
         )
@@ -506,7 +538,7 @@ export default function EventDetailPage() {
 
     return (
         <div className="container">
-            <Link href="/admin/events" className="nav-link">← Back to Events</Link>
+            <Link href={backHref} className="nav-link">{backLabel}</Link>
 
             <h1 style={{ marginTop: '1rem' }}>📅 {event.title}</h1>
             {event.description && (
@@ -601,7 +633,107 @@ export default function EventDetailPage() {
                     >
                         {hostingGenerationLoading ? 'Generating...' : 'Generate Hosting Round'}
                     </button>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setCalendarTarget(prev => prev === 'general' ? null : 'general')
+                            setCalendarResult(null)
+                            setCalendarError('')
+                            setCalendarTimeInput('')
+                        }}
+                        style={{
+                            background: calendarTarget === 'general' ? '#312e81' : '#1e293b',
+                            color: calendarTarget === 'general' ? '#c7d2fe' : '#cbd5e1',
+                            border: calendarTarget === 'general' ? '1px solid #6366f1' : '1px solid #334155',
+                            borderRadius: '8px',
+                            padding: '0.5rem 0.9rem',
+                            cursor: 'pointer',
+                            fontSize: '0.85rem'
+                        }}
+                    >
+                        📅 Create Calendar Event
+                    </button>
                 </div>
+
+                {calendarTarget === 'general' && (
+                    <div style={{
+                        background: '#0f172a',
+                        border: '1px solid #334155',
+                        borderRadius: '8px',
+                        padding: '0.65rem 0.75rem',
+                        marginBottom: '0.6rem'
+                    }}>
+                        {calendarResult ? (
+                            <div>
+                                <p style={{ color: '#6ee7b7', fontSize: '0.85rem', marginBottom: '0.35rem' }}>
+                                    ✅ Created!{' '}
+                                    <a href={calendarResult.eventUrl} target="_blank" rel="noreferrer" style={{ color: '#818cf8' }}>
+                                        Open in Google Calendar →
+                                    </a>
+                                </p>
+                                {calendarResult.addedGuests.length > 0 && (
+                                    <p style={{ color: '#94a3b8', fontSize: '0.8rem', marginTop: '0.25rem' }}>
+                                        Added as guests: {calendarResult.addedGuests.join(', ')}
+                                    </p>
+                                )}
+                                {calendarResult.skippedGuests.length > 0 && (
+                                    <p style={{ color: '#94a3b8', fontSize: '0.8rem', marginTop: '0.2rem' }}>
+                                        Not added (no linked Google account): {calendarResult.skippedGuests.join(', ')}
+                                    </p>
+                                )}
+                            </div>
+                        ) : (
+                            <>
+                                <p style={{ color: '#94a3b8', fontSize: '0.8rem', marginBottom: '0.4rem' }}>
+                                    Event time for {selectedHostingDate || 'selected date'}:
+                                </p>
+                                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                                    <input
+                                        type="time"
+                                        className="input-field"
+                                        value={calendarTimeInput}
+                                        onChange={e => setCalendarTimeInput(e.target.value)}
+                                        style={{ marginBottom: 0, maxWidth: '150px' }}
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (!selectedHostingDate) {
+                                                setCalendarError('Pick a date first.')
+                                                return
+                                            }
+                                            if (!calendarTimeInput) {
+                                                setCalendarError('Enter a time.')
+                                                return
+                                            }
+                                            handleCreateCalendarEvent(selectedHostingDate, calendarTimeInput, 'America/New_York')
+                                        }}
+                                        disabled={calendarLoading}
+                                        style={{
+                                            background: '#059669',
+                                            color: 'white',
+                                            border: 'none',
+                                            borderRadius: '7px',
+                                            padding: '0.4rem 0.8rem',
+                                            cursor: calendarLoading ? 'default' : 'pointer',
+                                            fontSize: '0.82rem'
+                                        }}
+                                    >
+                                        {calendarLoading ? 'Creating...' : 'Create'}
+                                    </button>
+                                </div>
+                                {calendarError === 'sign_in_required' && (
+                                    <p style={{ color: '#fcd34d', fontSize: '0.8rem', marginTop: '0.4rem' }}>
+                                        Sign in with Google to create calendar events.
+                                    </p>
+                                )}
+                                {calendarError && calendarError !== 'sign_in_required' && (
+                                    <p style={{ color: '#fca5a5', fontSize: '0.8rem', marginTop: '0.4rem' }}>{calendarError}</p>
+                                )}
+                            </>
+                        )}
+                    </div>
+                )}
 
                 <p style={{ color: '#94a3b8', fontSize: '0.78rem', marginBottom: '0.35rem' }}>Suggested dates</p>
                 <div style={{ position: 'relative', marginBottom: '0.75rem' }}>
@@ -889,7 +1021,114 @@ export default function EventDetailPage() {
                                                         >
                                                             {invite.is_shortlisted ? 'Shortlisted' : 'Shortlist'}
                                                         </button>
+                                                        {answer?.still_available && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    const nextTarget = calendarTarget === invite.id ? null : invite.id
+                                                                    setCalendarTarget(nextTarget)
+                                                                    setCalendarResult(null)
+                                                                    setCalendarError('')
+                                                                    setCalendarTimeInput(
+                                                                        answer.preferred_start_time
+                                                                            ? answer.preferred_start_time.slice(0, 5)
+                                                                            : ''
+                                                                    )
+                                                                }}
+                                                                style={{
+                                                                    background: calendarTarget === invite.id ? '#312e81' : '#1e293b',
+                                                                    color: calendarTarget === invite.id ? '#c7d2fe' : '#cbd5e1',
+                                                                    border: calendarTarget === invite.id ? '1px solid #6366f1' : '1px solid #334155',
+                                                                    padding: '0.25rem 0.55rem',
+                                                                    borderRadius: '6px',
+                                                                    cursor: 'pointer',
+                                                                    fontSize: '0.75rem'
+                                                                }}
+                                                            >
+                                                                📅 Create Event
+                                                            </button>
+                                                        )}
                                                     </div>
+
+                                                    {calendarTarget === invite.id && (
+                                                        <div style={{
+                                                            marginTop: '0.6rem',
+                                                            borderTop: '1px solid #1e293b',
+                                                            paddingTop: '0.6rem'
+                                                        }}>
+                                                            {calendarResult ? (
+                                                                <div>
+                                                                    <p style={{ color: '#6ee7b7', fontSize: '0.82rem', marginBottom: '0.25rem' }}>
+                                                                        ✅ Created!{' '}
+                                                                        <a href={calendarResult.eventUrl} target="_blank" rel="noreferrer" style={{ color: '#818cf8' }}>
+                                                                            Open in Google Calendar →
+                                                                        </a>
+                                                                    </p>
+                                                                    {calendarResult.addedGuests.length > 0 && (
+                                                                        <p style={{ color: '#94a3b8', fontSize: '0.78rem', marginTop: '0.2rem' }}>
+                                                                            Added as guests: {calendarResult.addedGuests.join(', ')}
+                                                                        </p>
+                                                                    )}
+                                                                    {calendarResult.skippedGuests.length > 0 && (
+                                                                        <p style={{ color: '#94a3b8', fontSize: '0.78rem', marginTop: '0.15rem' }}>
+                                                                            Not added (no linked Google account): {calendarResult.skippedGuests.join(', ')}
+                                                                        </p>
+                                                                    )}
+                                                                </div>
+                                                            ) : (
+                                                                <>
+                                                                    {answer.preferred_start_time ? (
+                                                                        <p style={{ color: '#cbd5e1', fontSize: '0.8rem', marginBottom: '0.4rem' }}>
+                                                                            Create event at{' '}
+                                                                            <strong>{formatRoundTimezoneTime(answer, round)}</strong>
+                                                                            {' '}({round.timezone || 'America/New_York'})
+                                                                        </p>
+                                                                    ) : (
+                                                                        <div style={{ display: 'flex', gap: '0.45rem', alignItems: 'center', marginBottom: '0.4rem' }}>
+                                                                            <span style={{ color: '#94a3b8', fontSize: '0.8rem' }}>Time:</span>
+                                                                            <input
+                                                                                type="time"
+                                                                                className="input-field"
+                                                                                value={calendarTimeInput}
+                                                                                onChange={e => setCalendarTimeInput(e.target.value)}
+                                                                                style={{ marginBottom: 0, maxWidth: '140px' }}
+                                                                            />
+                                                                        </div>
+                                                                    )}
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleCreateCalendarEvent(
+                                                                            round.selected_date,
+                                                                            answer.preferred_start_time
+                                                                                ? answer.preferred_start_time.slice(0, 5)
+                                                                                : calendarTimeInput,
+                                                                            round.timezone || 'America/New_York'
+                                                                        )}
+                                                                        disabled={calendarLoading || (!answer.preferred_start_time && !calendarTimeInput)}
+                                                                        style={{
+                                                                            background: '#059669',
+                                                                            color: 'white',
+                                                                            border: 'none',
+                                                                            borderRadius: '6px',
+                                                                            padding: '0.3rem 0.7rem',
+                                                                            cursor: (calendarLoading || (!answer.preferred_start_time && !calendarTimeInput)) ? 'default' : 'pointer',
+                                                                            fontSize: '0.78rem'
+                                                                        }}
+                                                                    >
+                                                                        {calendarLoading ? 'Creating...' : 'Create Calendar Event'}
+                                                                    </button>
+                                                                    {calendarError === 'sign_in_required' && (
+                                                                        <p style={{ color: '#fcd34d', fontSize: '0.78rem', marginTop: '0.35rem' }}>
+                                                                            Sign in with Google to create calendar events.
+                                                                        </p>
+                                                                    )}
+                                                                    {calendarError && calendarError !== 'sign_in_required' && (
+                                                                        <p style={{ color: '#fca5a5', fontSize: '0.78rem', marginTop: '0.35rem' }}>{calendarError}</p>
+                                                                    )}
+                                                                </>
+                                                            )}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             ))}
                                         </div>
