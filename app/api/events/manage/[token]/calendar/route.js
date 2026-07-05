@@ -1,54 +1,10 @@
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '../../../../../../lib/auth'
 import { getSupabaseAdmin } from '../../../../../../lib/supabaseAdmin'
+import { resolveOwnership, isResponseAvailableOnDate } from '../../../../../../lib/ownership'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
-
-function normalizeEmail(email) {
-    return email ? email.trim().toLowerCase() : null
-}
-
-function isResponseAvailableOnDate(response, dateStr) {
-    const dates = response.dates || []
-    if (response.response_type === 'available') return dates.includes(dateStr)
-    return !dates.includes(dateStr)
-}
-
-async function resolveOwnership(supabaseAdmin, ref, session) {
-    const email = normalizeEmail(session?.user?.email)
-
-    if (session?.user?.email) {
-        const { data: ownershipRows, error: ownershipError } = await supabaseAdmin
-            .from('event_ownerships')
-            .select('*')
-            .eq('event_id', ref)
-            .limit(1)
-
-        if (ownershipError) return { error: ownershipError.message, status: 500 }
-
-        if (ownershipRows?.length > 0) {
-            const ownership = ownershipRows[0]
-            const isOwner =
-                ownership.owner_user_id === session.user.id ||
-                (ownership.owner_email && normalizeEmail(ownership.owner_email) === email)
-
-            if (!isOwner) return { error: 'Forbidden', status: 403 }
-            return { ownership }
-        }
-    }
-
-    const { data: tokenRows, error: tokenError } = await supabaseAdmin
-        .from('event_ownerships')
-        .select('*')
-        .eq('manage_token', ref)
-        .limit(1)
-
-    if (tokenError) return { error: tokenError.message, status: 500 }
-    if (!tokenRows?.length) return { error: 'Owner link not found.', status: 404 }
-
-    return { ownership: tokenRows[0] }
-}
 
 function buildEndDateTime(selectedDate, startTime) {
     const [startHour, startMinute] = startTime.split(':').map(Number)
@@ -93,7 +49,7 @@ export async function POST(request, context) {
         return Response.json({ error: 'Missing selectedDate, startTime, or timezone.' }, { status: 400 })
     }
 
-    const { ownership, error, status } = await resolveOwnership(supabaseAdmin, ref, session)
+    const { ownership, error, status } = await resolveOwnership(supabaseAdmin, ref, session, request)
     if (!ownership) {
         return Response.json({ error: error || 'Owner link not found.' }, { status: status || 404 })
     }

@@ -2,14 +2,29 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams } from 'next/navigation'
-import { useSession, signIn } from 'next-auth/react'
-import { supabase } from '../../../lib/supabase'
+import { useSession } from 'next-auth/react'
 import Calendar from '../../../components/Calendar'
 import Link from 'next/link'
 
 const NAME_STORAGE_KEY = 'when_works_name'
 const SAVED_INVITES_KEY = 'when_works_saved_invites'
-const getSessionKey = (slug) => `when_works_session_${slug}`
+const getTokenKey = (slug) => `when_works_response_token_${slug}`
+
+async function postRespond(slug, body) {
+    const res = await fetch(`/api/respond/${slug}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || 'Request failed.')
+    return data
+}
+
+function readStoredToken(slug) {
+    if (typeof window === 'undefined') return null
+    return localStorage.getItem(getTokenKey(slug)) || null
+}
 
 export default function EventRespondPage() {
     const params = useParams()
@@ -43,6 +58,7 @@ export default function EventRespondPage() {
     const nameRef = useRef('')
     const savedModeRef = useRef('available')
     const responseIdRef = useRef(null)
+    const responseTokenRef = useRef(null)
     const saveTimeout = useRef(null)
     const nameTimeout = useRef(null)
     const includesSOTimeout = useRef(null)
@@ -109,49 +125,22 @@ export default function EventRespondPage() {
         Promise.resolve().then(() => setName(resolvedSignedInName))
     }, [resolvedSignedInName]) // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Retro-link google_email when user signs in after already having a response record
-    useEffect(() => {
-        if (!session?.user?.email || !responseId) return
-        supabase
-            .from('responses')
-            .update({ google_email: session.user.email })
-            .eq('id', responseId)
-            .is('google_email', null)
-            .then(() => { })
-    }, [session?.user?.email, responseId])
-
     // Fetch event
     useEffect(() => {
         const fetchEvent = async () => {
-            const { data, error } = await supabase
-                .from('events')
-                .select('*')
-                .eq('slug', slug)
-                .limit(1)
-
-            if (error || !data || data.length === 0) {
-                setEventNotFound(true)
-            } else {
-                setEvent(data[0])
-                eventRef.current = data[0]
-
-                const { data: responderRows } = await supabase
-                    .from('responses')
-                    .select('includes_so')
-                    .eq('event_id', data[0].id)
-                const attendeeCount = (responderRows || []).reduce((sum, r) => sum + getAttendeeWeight(r), 0)
-                setResponseCount(attendeeCount)
-
-                if (data[0].show_availability_counts) {
-                    const { data: confirmedData } = await supabase
-                        .from('responses')
-                        .select('id, response_type, dates, includes_so')
-                        .eq('event_id', data[0].id)
-                        .eq('confirmed', true)
-                    setConfirmedResponses(confirmedData || [])
+            try {
+                const res = await fetch(`/api/respond/${slug}`)
+                if (!res.ok) {
+                    setEventNotFound(true)
                 } else {
-                    setConfirmedResponses([])
+                    const data = await res.json()
+                    setEvent(data.event)
+                    eventRef.current = data.event
+                    setResponseCount(data.attendeeCount || 0)
+                    setConfirmedResponses(data.confirmedResponses || [])
                 }
+            } catch {
+                setEventNotFound(true)
             }
             setEventLoading(false)
         }
@@ -182,32 +171,21 @@ export default function EventRespondPage() {
         if (nameTimeout.current) clearTimeout(nameTimeout.current)
 
         nameTimeout.current = setTimeout(async () => {
-            const currentResponseId = responseIdRef.current
-            if (!currentResponseId) return
+            if (!responseIdRef.current) return
 
             const trimmedName = name.trim()
-            const newDisplayName = trimmedName || displayName
-            const newInternalName = trimmedName ? trimmedName.toLowerCase() : null
+            if (!trimmedName) return
 
-            const updateData = { display_name: newDisplayName }
-
-            // Only update internal name if they provided a real name
-            if (newInternalName && !displayName.startsWith('Guest #')) {
-                updateData.name = newInternalName
-            } else if (newInternalName) {
-                updateData.name = newInternalName
-            }
-
-            await supabase
-                .from('responses')
-                .update(updateData)
-                .eq('id', currentResponseId)
-
-            // Update localStorage
-            if (trimmedName) {
+            try {
+                await postRespond(slug, {
+                    action: 'save',
+                    responseToken: responseTokenRef.current,
+                    name: trimmedName,
+                })
                 localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
-                localStorage.setItem(getSessionKey(slug), newInternalName)
                 setDisplayName(trimmedName)
+            } catch {
+                // Name save is retried on the next change or at confirm time
             }
         }, 1000)
 
@@ -222,28 +200,29 @@ export default function EventRespondPage() {
         if (includesSOTimeout.current) clearTimeout(includesSOTimeout.current)
 
         includesSOTimeout.current = setTimeout(async () => {
-            const currentResponseId = responseIdRef.current
-            if (!currentResponseId) return
+            if (!responseIdRef.current) return
 
-            await supabase
-                .from('responses')
-                .update({ includes_so: includesSO })
-                .eq('id', currentResponseId)
+            try {
+                await postRespond(slug, {
+                    action: 'save',
+                    responseToken: responseTokenRef.current,
+                    includes_so: includesSO,
+                })
 
-            if (eventRef.current) {
-                const { data: responderRows } = await supabase
-                    .from('responses')
-                    .select('includes_so')
-                    .eq('event_id', eventRef.current.id)
-                const attendeeCount = (responderRows || []).reduce((sum, r) => sum + getAttendeeWeight(r), 0)
-                setResponseCount(attendeeCount)
+                const res = await fetch(`/api/respond/${slug}`)
+                if (res.ok) {
+                    const data = await res.json()
+                    setResponseCount(data.attendeeCount || 0)
+                }
+            } catch {
+                // Count refreshes on the next fetch
             }
         }, 600)
 
         return () => {
             if (includesSOTimeout.current) clearTimeout(includesSOTimeout.current)
         }
-    }, [includesSO, sessionStarted])
+    }, [includesSO, sessionStarted, slug])
 
     const scheduleSave = useCallback(() => {
         if (saveTimeout.current) clearTimeout(saveTimeout.current)
@@ -261,16 +240,17 @@ export default function EventRespondPage() {
                 ? [...availableDatesRef.current]
                 : [...unavailableDatesRef.current]
 
-            const { error: updateError } = await supabase
-                .from('responses')
-                .update({
+            try {
+                await postRespond(slug, {
+                    action: 'save',
+                    responseToken: responseTokenRef.current,
                     response_type: currentMode,
                     dates: datesToSave.sort(),
-                    confirmed: false
+                    confirmed: false,
                 })
-                .eq('id', currentResponseId)
-
-            if (updateError) console.error('Auto-save error:', updateError)
+            } catch (updateError) {
+                console.error('Auto-save error:', updateError)
+            }
 
             isSaving.current = false
             setSaveStatus('saved')
@@ -279,26 +259,7 @@ export default function EventRespondPage() {
                 setSaveStatus(prev => prev === 'saved' ? 'idle' : prev)
             }, 2000)
         }, 2000)
-    }, [])
-
-    const getNextGuestNumber = async (eventId) => {
-        const { data } = await supabase
-            .from('responses')
-            .select('display_name')
-            .eq('event_id', eventId)
-            .like('display_name', 'Guest %')
-
-        if (!data) return 1
-
-        const guestNumbers = data
-            .map(r => {
-                const match = r.display_name.match(/Guest #(\d+)/)
-                return match ? parseInt(match[1]) : 0
-            })
-            .filter(n => n > 0)
-
-        return guestNumbers.length > 0 ? Math.max(...guestNumbers) + 1 : 1
-    }
+    }, [slug])
 
     const applyDateToggle = (dates, dateStr) => {
         return dates.includes(dateStr)
@@ -306,121 +267,73 @@ export default function EventRespondPage() {
             : [...dates, dateStr]
     }
 
-    const startSession = useCallback(async (sessionDisplayName, sessionInternalName) => {
+    const startSession = useCallback(async (sessionDisplayName) => {
         if (sessionStarting.current) return
         if (!eventRef.current) return
 
         sessionStarting.current = true
         setError('')
 
-        const currentEvent = eventRef.current
-        const hydrateExisting = (prev) => {
-            setResponseId(prev.id)
-            responseIdRef.current = prev.id
-            if (pendingTogglesRef.current.length === 0) {
-                setMode(prev.response_type)
-            }
-            setConfirmed(prev.confirmed)
-            setDisplayName(prev.display_name)
-            setIncludesSO(Boolean(prev.includes_so))
-
-            if (session?.user?.email) {
-                if (resolvedSignedInName) setName(resolvedSignedInName)
-            } else if (!prev.name.startsWith('guest_')) {
-                setName(prev.display_name)
-            }
-
-            let nextAvailableDates = prev.response_type === 'available' ? (prev.dates || []) : []
-            let nextUnavailableDates = prev.response_type === 'unavailable' ? (prev.dates || []) : []
-
-            if (pendingTogglesRef.current.length > 0) {
-                for (const { dateStr, toggleMode } of pendingTogglesRef.current) {
-                    if (toggleMode === 'available') {
-                        nextAvailableDates = applyDateToggle(nextAvailableDates, dateStr)
-                    } else {
-                        nextUnavailableDates = applyDateToggle(nextUnavailableDates, dateStr)
-                    }
-                }
-            }
-
-            setAvailableDates(nextAvailableDates)
-            availableDatesRef.current = nextAvailableDates
-            setUnavailableDates(nextUnavailableDates)
-            unavailableDatesRef.current = nextUnavailableDates
-
-            localStorage.setItem(getSessionKey(slug), prev.name)
-
-            setSessionStarted(true)
-            pendingTogglesRef.current = []
-            scheduleSave()
-            sessionStarting.current = false
-        }
-
-        // Signed-in: look up existing response by google_email to prevent duplicates
-        if (session?.user?.email) {
-            const { data: byEmail } = await supabase
-                .from('responses')
-                .select('*')
-                .eq('event_id', currentEvent.id)
-                .eq('google_email', session.user.email)
-                .limit(1)
-
-            if (byEmail && byEmail.length > 0) {
-                hydrateExisting(byEmail[0])
-                return
-            }
-        }
-
-        const lookupName = sessionInternalName || (sessionDisplayName ? sessionDisplayName.trim().toLowerCase() : null)
-
-        if (lookupName) {
-            const { data: existing } = await supabase
-                .from('responses')
-                .select('*')
-                .eq('name', lookupName)
-                .eq('event_id', currentEvent.id)
-                .limit(1)
-
-            if (existing && existing.length > 0) {
-                hydrateExisting(existing[0])
-                return
-            }
-        }
-
         const trimmedName = (sessionDisplayName || nameRef.current).trim()
-        const guestNumber = await getNextGuestNumber(currentEvent.id)
-        const finalDisplayName = trimmedName || `Guest #${guestNumber}`
-        const finalInternalName = trimmedName ? trimmedName.toLowerCase() : `guest_${guestNumber}`
 
-        const { data, error: insertError } = await supabase
-            .from('responses')
-            .insert({
-                name: finalInternalName,
-                display_name: finalDisplayName,
-                includes_so: includesSO,
-                response_type: 'available',
-                dates: [],
-                confirmed: false,
-                event_id: currentEvent.id,
-                google_email: session?.user?.email ?? null,
+        let payload
+        try {
+            payload = await postRespond(slug, {
+                action: 'start',
+                responseToken: readStoredToken(slug),
+                name: trimmedName || null,
+                includesSO,
             })
-            .select()
-
-        if (insertError) {
+        } catch (startError) {
             setError('Something went wrong. Please try again.')
-            console.error(insertError)
+            console.error(startError)
             sessionStarting.current = false
             return
         }
 
-        setResponseId(data[0].id)
-        responseIdRef.current = data[0].id
-        setDisplayName(finalDisplayName)
-        setResponseCount(prev => prev + getAttendeeWeight({ includes_so: includesSO }))
+        const { response: prev, created } = payload
 
-        localStorage.setItem(getSessionKey(slug), finalInternalName)
-        if (trimmedName) {
-            localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
+        localStorage.setItem(getTokenKey(slug), prev.response_token)
+        responseTokenRef.current = prev.response_token
+
+        setResponseId(prev.id)
+        responseIdRef.current = prev.id
+        if (pendingTogglesRef.current.length === 0) {
+            setMode(prev.response_type)
+        }
+        setConfirmed(prev.confirmed)
+        setDisplayName(prev.display_name)
+        setIncludesSO(Boolean(prev.includes_so))
+
+        if (session?.user?.email) {
+            if (resolvedSignedInName) setName(resolvedSignedInName)
+        } else if (!created && prev.name && !prev.name.startsWith('guest_')) {
+            setName(prev.display_name)
+        }
+
+        let nextAvailableDates = prev.response_type === 'available' ? (prev.dates || []) : []
+        let nextUnavailableDates = prev.response_type === 'unavailable' ? (prev.dates || []) : []
+
+        if (pendingTogglesRef.current.length > 0) {
+            for (const { dateStr, toggleMode } of pendingTogglesRef.current) {
+                if (toggleMode === 'available') {
+                    nextAvailableDates = applyDateToggle(nextAvailableDates, dateStr)
+                } else {
+                    nextUnavailableDates = applyDateToggle(nextUnavailableDates, dateStr)
+                }
+            }
+        }
+
+        setAvailableDates(nextAvailableDates)
+        availableDatesRef.current = nextAvailableDates
+        setUnavailableDates(nextUnavailableDates)
+        unavailableDatesRef.current = nextUnavailableDates
+
+        if (created) {
+            setResponseCount(count => count + getAttendeeWeight({ includes_so: prev.includes_so }))
+            if (trimmedName) {
+                localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
+            }
         }
 
         setSessionStarted(true)
@@ -488,13 +401,9 @@ export default function EventRespondPage() {
                 startSession(resolvedSignedInName)
                 return
             }
-            const sessionName = localStorage.getItem(getSessionKey(slug))
-            if (sessionName) {
-                startSession(null, sessionName)
-                return
+            if (readStoredToken(slug)) {
+                startSession(null)
             }
-            const savedName = localStorage.getItem(NAME_STORAGE_KEY)
-            if (savedName) startSession(savedName)
         }, 0)
 
         return () => clearTimeout(timeoutId)
@@ -525,6 +434,8 @@ export default function EventRespondPage() {
         const trimmedName = name.trim()
 
         const updateData = {
+            action: 'save',
+            responseToken: responseTokenRef.current,
             includes_so: includesSO,
             response_type: mode,
             dates: datesToConfirm.sort(),
@@ -532,31 +443,28 @@ export default function EventRespondPage() {
         }
 
         if (trimmedName && !session?.user?.email) {
-            updateData.display_name = trimmedName
-            updateData.name = trimmedName.toLowerCase()
-            localStorage.setItem(getSessionKey(slug), trimmedName.toLowerCase())
-            localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
-            setDisplayName(trimmedName)
+            updateData.name = trimmedName
         }
 
-        const { error: updateError } = await supabase
-            .from('responses')
-            .update(updateData)
-            .eq('id', responseId)
+        try {
+            await postRespond(slug, updateData)
 
-        if (updateError) {
-            setError('Something went wrong. Please try again.')
-        } else {
+            if (trimmedName && !session?.user?.email) {
+                localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
+                setDisplayName(trimmedName)
+            }
+
             setConfirmed(true)
             savedModeRef.current = mode
             if (event?.show_availability_counts) {
-                const { data: confirmedData } = await supabase
-                    .from('responses')
-                    .select('id, response_type, dates, includes_so')
-                    .eq('event_id', event.id)
-                    .eq('confirmed', true)
-                setConfirmedResponses(confirmedData || [])
+                const res = await fetch(`/api/respond/${slug}`)
+                if (res.ok) {
+                    const data = await res.json()
+                    setConfirmedResponses(data.confirmedResponses || [])
+                }
             }
+        } catch {
+            setError('Something went wrong. Please try again.')
         }
 
         setLoading(false)
@@ -670,48 +578,34 @@ export default function EventRespondPage() {
 
             setHostingInfoLoading(true)
 
-            const { data: openRounds } = await supabase
-                .from('event_followups')
-                .select('id, selected_date, status, created_at')
-                .eq('event_id', event.id)
-                .eq('status', 'open')
-                .order('created_at', { ascending: false })
-                .limit(1)
+            let data = null
+            try {
+                data = await postRespond(slug, {
+                    action: 'hosting_info',
+                    responseToken: responseTokenRef.current,
+                })
+            } catch {
+                data = null
+            }
 
-            if (!openRounds || openRounds.length === 0) {
+            if (!data?.round || !data?.inviteToken) {
                 setHostingRoundInfo(null)
                 setHostingInfoLoading(false)
                 return
             }
 
-            const round = openRounds[0]
-
-            const { data: inviteRows } = await supabase
-                .from('event_followup_invites')
-                .select('id, invite_token')
-                .eq('followup_id', round.id)
-                .eq('response_id', responseId)
-                .limit(1)
-
-            if (!inviteRows || inviteRows.length === 0) {
-                setHostingRoundInfo(null)
-                setHostingInfoLoading(false)
-                return
-            }
-
-            const invite = inviteRows[0]
-            const canUseLink = isAvailableOnDate(mode, mode === 'available' ? availableDates : unavailableDates, round.selected_date)
+            const canUseLink = isAvailableOnDate(mode, mode === 'available' ? availableDates : unavailableDates, data.round.selected_date)
 
             setHostingRoundInfo({
-                selectedDate: round.selected_date,
-                inviteToken: invite.invite_token,
+                selectedDate: data.round.selected_date,
+                inviteToken: data.inviteToken,
                 canUseLink
             })
             setHostingInfoLoading(false)
         }
 
         loadHostingInfo()
-    }, [confirmed, event?.id, responseId, mode, availableDates, unavailableDates, isAvailableOnDate])
+    }, [confirmed, event?.id, responseId, mode, availableDates, unavailableDates, isAvailableOnDate, slug])
 
     if (eventLoading) {
         return (

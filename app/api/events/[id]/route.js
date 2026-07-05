@@ -1,13 +1,10 @@
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '../../../../lib/auth'
 import { getSupabaseAdmin } from '../../../../lib/supabaseAdmin'
+import { resolveOwnership } from '../../../../lib/ownership'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
-
-function normalizeEmail(email) {
-    return email ? email.trim().toLowerCase() : null
-}
 
 export async function GET(_request, context) {
     const session = await getServerSession(authOptions)
@@ -26,35 +23,10 @@ export async function GET(_request, context) {
         return Response.json({ error: 'Event not found.' }, { status: 404 })
     }
 
-    const { data: ownershipRows, error: ownershipError } = await supabaseAdmin
-        .from('event_ownerships')
-        .select('*')
-        .eq('event_id', params.id)
-        .limit(1)
+    const { ownership, error: ownershipError, status } = await resolveOwnership(supabaseAdmin, params.id, session)
 
-    if (ownershipError) {
-        return Response.json({ error: ownershipError.message }, { status: 500 })
-    }
-
-    if (!ownershipRows || ownershipRows.length === 0) {
-        return Response.json({ error: 'Event not found.' }, { status: 404 })
-    }
-
-    const ownership = ownershipRows[0]
-    const email = normalizeEmail(session.user.email)
-    const isOwner =
-        ownership.owner_user_id === session.user.id ||
-        (ownership.owner_email && normalizeEmail(ownership.owner_email) === email)
-
-    if (!isOwner) {
-        return Response.json({ error: 'Forbidden' }, { status: 403 })
-    }
-
-    if (!ownership.owner_user_id && ownership.owner_email && normalizeEmail(ownership.owner_email) === email && session?.user?.id) {
-        await supabaseAdmin
-            .from('event_ownerships')
-            .update({ owner_user_id: session.user.id })
-            .eq('id', ownership.id)
+    if (!ownership) {
+        return Response.json({ error: ownershipError || 'Event not found.' }, { status: status || 404 })
     }
 
     const { data: eventRows, error: eventError } = await supabaseAdmin

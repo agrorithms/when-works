@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
-import { supabase } from '../../../lib/supabase'
 
 const TIME_HELP = 'Use a time like 6pm, 6:30pm, 18:30, or 06:30.'
 const CURATED_TIMEZONES = [
@@ -158,44 +157,25 @@ export default function FollowUpRespondPage() {
 
     useEffect(() => {
         const fetchInvite = async () => {
-            const { data, error: inviteError } = await supabase
-                .from('event_followup_invites')
-                .select(`
-                    *,
-                    event_followups (
-                        *,
-                        events (*)
-                    )
-                `)
-                .eq('invite_token', token)
-                .limit(1)
+            let data = null
+            try {
+                const res = await fetch(`/api/followup/${token}`)
+                if (res.ok) data = await res.json()
+            } catch {
+                data = null
+            }
 
-            if (inviteError || !data || data.length === 0) {
+            if (!data?.invite || !data?.round) {
                 setNotFound(true)
                 setLoading(false)
                 return
             }
 
-            const row = data[0]
-            const followup = row.event_followups
+            const answer = data.answer || null
 
-            if (!followup) {
-                setNotFound(true)
-                setLoading(false)
-                return
-            }
-
-            const { data: answerData } = await supabase
-                .from('event_followup_answers')
-                .select('*')
-                .eq('invite_id', row.id)
-                .limit(1)
-
-            const answer = answerData && answerData.length > 0 ? answerData[0] : null
-
-            setInvite(row)
-            setRound(followup)
-            setEvent(followup.events)
+            setInvite(data.invite)
+            setRound(data.round)
+            setEvent(data.event)
             setExistingAnswer(answer)
 
             if (answer) {
@@ -236,39 +216,34 @@ export default function FollowUpRespondPage() {
         setSubmitting(true)
 
         const payload = {
-            followup_id: round.id,
-            invite_id: invite.id,
             still_available: canHost,
             preferred_start_time: canHost ? normalizedTime.dbTime : null,
             preferred_start_time_text: canHost ? normalizedTime.normalizedDisplay : null,
             responder_timezone: canHost ? responderTimezone.trim() : null
         }
 
-        let saveError = null
+        let saveErrorMessage = null
 
-        if (existingAnswer) {
-            const { data: updated, error: updateError } = await supabase
-                .from('event_followup_answers')
-                .update(payload)
-                .eq('id', existingAnswer.id)
-                .select('*')
-                .single()
-            saveError = updateError
-            if (!updateError) setExistingAnswer(updated)
-        } else {
-            const { data: inserted, error: insertError } = await supabase
-                .from('event_followup_answers')
-                .insert(payload)
-                .select('*')
-                .single()
-            saveError = insertError
-            if (!insertError) setExistingAnswer(inserted)
+        try {
+            const res = await fetch(`/api/followup/${token}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            })
+            const data = await res.json().catch(() => ({}))
+            if (!res.ok) {
+                saveErrorMessage = data.error || 'Please try again.'
+            } else {
+                setExistingAnswer(data.answer)
+            }
+        } catch {
+            saveErrorMessage = 'Please try again.'
         }
 
         setSubmitting(false)
 
-        if (saveError) {
-            setError('Could not save your response. ' + saveError.message)
+        if (saveErrorMessage) {
+            setError('Could not save your response. ' + saveErrorMessage)
             return
         }
 

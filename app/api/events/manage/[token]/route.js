@@ -1,75 +1,13 @@
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '../../../../../lib/auth'
 import { getSupabaseAdmin } from '../../../../../lib/supabaseAdmin'
+import { resolveOwnership, isResponseAvailableOnDate } from '../../../../../lib/ownership'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
-function normalizeEmail(email) {
-    return email ? email.trim().toLowerCase() : null
-}
-
-function isResponseAvailableOnDate(response, dateStr) {
-    const dates = response.dates || []
-    if (response.response_type === 'available') return dates.includes(dateStr)
-    return !dates.includes(dateStr)
-}
-
 function isBlocked(event, dateStr) {
     return (event.blocked_dates || []).includes(dateStr)
-}
-
-async function resolveOwnership(supabaseAdmin, ref, session) {
-    const email = normalizeEmail(session?.user?.email)
-
-    if (session?.user?.email) {
-        const { data: ownershipRows, error: ownershipError } = await supabaseAdmin
-            .from('event_ownerships')
-            .select('*')
-            .eq('event_id', ref)
-            .limit(1)
-
-        if (ownershipError) {
-            return { error: ownershipError.message, status: 500 }
-        }
-
-        if (ownershipRows && ownershipRows.length > 0) {
-            const ownership = ownershipRows[0]
-            const isOwner =
-                ownership.owner_user_id === session.user.id ||
-                (ownership.owner_email && normalizeEmail(ownership.owner_email) === email)
-
-            if (!isOwner) {
-                return { error: 'Forbidden', status: 403 }
-            }
-
-            if (!ownership.owner_user_id && ownership.owner_email && normalizeEmail(ownership.owner_email) === email && session?.user?.id) {
-                await supabaseAdmin
-                    .from('event_ownerships')
-                    .update({ owner_user_id: session.user.id })
-                    .eq('id', ownership.id)
-                ownership.owner_user_id = session.user.id
-            }
-
-            return { ownership }
-        }
-    }
-
-    const { data: tokenRows, error: tokenError } = await supabaseAdmin
-        .from('event_ownerships')
-        .select('*')
-        .eq('manage_token', ref)
-        .limit(1)
-
-    if (tokenError) {
-        return { error: tokenError.message, status: 500 }
-    }
-
-    if (!tokenRows || tokenRows.length === 0) {
-        return { error: 'Owner link not found.', status: 404 }
-    }
-
-    return { ownership: tokenRows[0] }
 }
 
 async function loadEventBundle(supabaseAdmin, ownership) {
@@ -147,7 +85,7 @@ async function loadEventBundle(supabaseAdmin, ownership) {
     }
 }
 
-export async function GET(_request, context) {
+export async function GET(request, context) {
     const supabaseAdmin = getSupabaseAdmin()
     const session = await getServerSession(authOptions)
 
@@ -162,7 +100,7 @@ export async function GET(_request, context) {
         return Response.json({ error: 'Owner link not found.' }, { status: 404 })
     }
 
-    const { ownership, error, status } = await resolveOwnership(supabaseAdmin, ref, session)
+    const { ownership, error, status } = await resolveOwnership(supabaseAdmin, ref, session, request)
 
     if (!ownership) {
         return Response.json({ error: error || 'Owner link not found.' }, { status: status || 404 })
@@ -193,7 +131,7 @@ export async function POST(request, context) {
     }
 
     const body = await request.json().catch(() => ({}))
-    const { ownership, error, status } = await resolveOwnership(supabaseAdmin, ref, session)
+    const { ownership, error, status } = await resolveOwnership(supabaseAdmin, ref, session, request)
 
     if (!ownership) {
         return Response.json({ error: error || 'Owner link not found.' }, { status: status || 404 })
