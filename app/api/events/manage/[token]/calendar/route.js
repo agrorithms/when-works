@@ -1,7 +1,9 @@
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '../../../../../../lib/auth'
 import { getSupabaseAdmin } from '../../../../../../lib/supabaseAdmin'
-import { resolveOwnership, isResponseAvailableOnDate } from '../../../../../../lib/ownership'
+import { resolveOwnership } from '../../../../../../lib/ownership'
+import { isResponseAvailableOnDate } from '../../../../../../lib/attendance'
+import { normalizeEmail } from '../../../../../../lib/participants'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -68,16 +70,21 @@ export async function POST(request, context) {
 
     const { data: responses, error: responsesError } = await supabaseAdmin
         .from('responses')
-        .select('*')
+        .select('*, participants(email)')
         .eq('event_id', ownership.event_id)
+        .is('deleted_at', null)
 
     if (responsesError) {
         return Response.json({ error: responsesError.message }, { status: 500 })
     }
 
+    // Participant email is the source of truth; normalized google_email
+    // covers rows the backfill hasn't linked yet (dropped post-005).
+    const attendeeEmail = (r) => r.participants?.email || normalizeEmail(r.google_email)
+
     const availableResponses = (responses || []).filter(r => isResponseAvailableOnDate(r, selectedDate))
-    const withEmail = availableResponses.filter(r => r.google_email)
-    const withoutEmail = availableResponses.filter(r => !r.google_email)
+    const withEmail = availableResponses.filter(r => attendeeEmail(r))
+    const withoutEmail = availableResponses.filter(r => !attendeeEmail(r))
 
     const startDateTime = `${selectedDate}T${startTime}:00`
     const endDateTime = buildEndDateTime(selectedDate, startTime)
@@ -87,7 +94,7 @@ export async function POST(request, context) {
         description: event.description || '',
         start: { dateTime: startDateTime, timeZone: timezone },
         end: { dateTime: endDateTime, timeZone: timezone },
-        attendees: withEmail.map(r => ({ email: r.google_email })),
+        attendees: withEmail.map(r => ({ email: attendeeEmail(r) })),
     }
 
     const gcalRes = await fetch(

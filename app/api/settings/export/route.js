@@ -1,12 +1,20 @@
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '../../../../lib/auth'
 import { getSupabaseAdmin } from '../../../../lib/supabaseAdmin'
+import { normalizeEmail, legacyEmailPattern, getParticipantByEmail } from '../../../../lib/participants'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
-function normalizeEmail(email) {
-    return email ? email.trim().toLowerCase() : null
+// Tokens are live capabilities and export files get shared — strip them from
+// every exported row. Other people's emails (respondents to owned events)
+// are reduced to a has_email flag.
+function exportResponse(row, { ownRow = false } = {}) {
+    const { response_token, participant_token, google_email, participants, ...rest } = row
+    if (ownRow) {
+        return { ...rest, google_email: google_email ? normalizeEmail(google_email) : null }
+    }
+    return { ...rest, has_email: Boolean(google_email || participants?.email) }
 }
 
 export async function GET() {
@@ -17,23 +25,38 @@ export async function GET() {
 
     const email = normalizeEmail(session.user.email)
     const supabase = getSupabaseAdmin()
+    const participant = await getParticipantByEmail(supabase, email)
 
-    // Profile
-    const { data: profile } = await supabase
-        .from('user_profiles')
-        .select('*')
-        .eq('email', email)
-        .single()
+    // Profile — explicit columns; participant_token stays out of exports.
+    const profile = participant
+        ? {
+            email: participant.email,
+            display_name: participant.display_name,
+            default_timezone: participant.default_timezone,
+            date_format: participant.date_format,
+            time_format: participant.time_format,
+            created_at: participant.created_at,
+        }
+        : null
 
-    // Owned event IDs (via owner_email)
-    const { data: ownerships } = await supabase
-        .from('event_ownerships')
-        .select('event_id')
-        .eq('owner_email', email)
+    // Owned event IDs — participant linkage plus the legacy owner_email
+    // column (dropped with 005).
+    const ownershipQueries = [
+        supabase.from('event_ownerships').select('event_id').eq('owner_email', email),
+    ]
+    if (participant) {
+        ownershipQueries.push(
+            supabase.from('event_ownerships').select('event_id').eq('participant_id', participant.id)
+        )
+    }
 
-    const ownedEventIds = (ownerships ?? []).map(o => o.event_id)
+    const ownershipResults = await Promise.all(ownershipQueries)
+    const ownedEventIds = [...new Set(
+        ownershipResults.flatMap(({ data }) => (data ?? []).map((o) => o.event_id))
+    )]
 
-    // Owned events with child data
+    // Owned events with child data. Soft-deleted responses are included,
+    // tagged by their deleted_at.
     let events_owned = []
     if (ownedEventIds.length > 0) {
         const { data: eventsData } = await supabase
@@ -44,7 +67,7 @@ export async function GET() {
         for (const event of (eventsData ?? [])) {
             const { data: responses } = await supabase
                 .from('responses')
-                .select('*')
+                .select('*, participants(email)')
                 .eq('event_id', event.id)
 
             const { data: followups } = await supabase
@@ -62,24 +85,38 @@ export async function GET() {
                 followupsWithData.push({ ...fu, invites: invites ?? [] })
             }
 
-            events_owned.push({ ...event, responses: responses ?? [], followups: followupsWithData })
+            events_owned.push({
+                ...event,
+                responses: (responses ?? []).map((row) => exportResponse(row)),
+                followups: followupsWithData,
+            })
         }
     }
 
-    // Responses to other people's events (by google_email, excluding owned events)
-    const responsesQuery = supabase
-        .from('responses')
-        .select('*')
-        .eq('google_email', email)
-
-    if (ownedEventIds.length > 0) {
-        responsesQuery.not('event_id', 'in', `(${ownedEventIds.join(',')})`)
+    // Responses to other people's events — participant linkage plus legacy
+    // raw-cased google_email rows. Includes soft-deleted rows.
+    const responseQueries = [
+        supabase.from('responses').select('*').ilike('google_email', legacyEmailPattern(email)),
+    ]
+    if (participant) {
+        responseQueries.push(
+            supabase.from('responses').select('*').eq('participant_id', participant.id)
+        )
     }
 
-    const { data: responses_to_others } = await responsesQuery
+    const responseResults = await Promise.all(responseQueries)
+    const responses_to_others = Object.values(
+        responseResults
+            .flatMap(({ data }) => data ?? [])
+            .filter((row) => !ownedEventIds.includes(row.event_id))
+            .reduce((acc, row) => {
+                acc[row.id] = row
+                return acc
+            }, {})
+    ).map((row) => exportResponse(row, { ownRow: true }))
 
     // Follow-up answers tied to responses_to_others
-    const otherResponseIds = (responses_to_others ?? []).map(r => r.id)
+    const otherResponseIds = responses_to_others.map(r => r.id)
     let followup_answers = []
     if (otherResponseIds.length > 0) {
         const { data: invites } = await supabase
@@ -103,7 +140,7 @@ export async function GET() {
         email,
         profile,
         events_owned,
-        responses_to_others: responses_to_others ?? [],
+        responses_to_others,
         followup_answers,
     }
 

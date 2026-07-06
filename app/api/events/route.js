@@ -2,7 +2,12 @@ import crypto from 'crypto'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '../../../lib/auth'
 import { getSupabaseAdmin } from '../../../lib/supabaseAdmin'
-import { normalizeEmail } from '../../../lib/ownership'
+import {
+    normalizeEmail,
+    getParticipantByEmail,
+    ensureParticipantForSession,
+    getParticipantByToken,
+} from '../../../lib/participants'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -18,7 +23,17 @@ async function getOwnedEventsForSession(session) {
     }
 
     const email = normalizeEmail(session.user.email)
+    const participant = await getParticipantByEmail(supabaseAdmin, email)
 
+    const participantQuery = participant
+        ? supabaseAdmin
+            .from('event_ownerships')
+            .select('*')
+            .eq('participant_id', participant.id)
+        : Promise.resolve({ data: [], error: null })
+
+    // Legacy fallback until the post-005 cleanup PR: rows old code wrote by
+    // email that the backfill hasn't linked yet.
     const emailQuery = email
         ? supabaseAdmin
             .from('event_ownerships')
@@ -26,35 +41,31 @@ async function getOwnedEventsForSession(session) {
             .eq('owner_email', email)
         : Promise.resolve({ data: [], error: null })
 
-    const userQuery = session?.user?.id
-        ? supabaseAdmin
-            .from('event_ownerships')
-            .select('*')
-            .eq('owner_user_id', session.user.id)
-        : Promise.resolve({ data: [], error: null })
-
-    const [{ data: userRows, error: userError }, { data: emailRows, error: emailError }] = await Promise.all([
-        userQuery,
+    const [{ data: participantRows, error: participantError }, { data: emailRows, error: emailError }] = await Promise.all([
+        participantQuery,
         emailQuery,
     ])
 
-    if (userError) {
-        throw userError
+    if (participantError) {
+        throw participantError
     }
 
     if (emailError) {
         throw emailError
     }
 
-    const rows = [...(userRows || []), ...(emailRows || [])]
+    const rows = [...(participantRows || []), ...(emailRows || [])]
         .filter((row, index, allRows) => index === allRows.findIndex((candidate) => candidate.event_id === row.event_id))
-    const claimableRows = rows.filter((row) => !row.owner_user_id && row.owner_email && normalizeEmail(row.owner_email) === email)
 
-    if (claimableRows.length > 0 && session?.user?.id) {
-        await supabaseAdmin
-            .from('event_ownerships')
-            .update({ owner_user_id: session.user.id })
-            .in('id', claimableRows.map((row) => row.id))
+    const claimableRows = rows.filter((row) => !row.participant_id)
+    if (claimableRows.length > 0) {
+        const claimant = participant || await ensureParticipantForSession(supabaseAdmin, session)
+        if (claimant) {
+            await supabaseAdmin
+                .from('event_ownerships')
+                .update({ participant_id: claimant.id })
+                .in('id', claimableRows.map((row) => row.id))
+        }
     }
 
     const eventIds = [...new Set(rows.map((row) => row.event_id))]
@@ -74,6 +85,7 @@ async function getOwnedEventsForSession(session) {
         .from('responses')
         .select('id, event_id, confirmed, includes_so')
         .in('event_id', eventIds)
+        .is('deleted_at', null)
 
     if (responsesError) {
         throw responsesError
@@ -157,6 +169,13 @@ export async function POST(request) {
         return Response.json({ error: 'Please sign in with Google to create an event this way.' }, { status: 401 })
     }
 
+    let participant = null
+    if (accessMode === 'google') {
+        participant = await ensureParticipantForSession(supabaseAdmin, session)
+    } else if (body.participantToken) {
+        participant = await getParticipantByToken(supabaseAdmin, body.participantToken)
+    }
+
     const { data: eventData, error: eventError } = await supabaseAdmin
         .from('events')
         .insert({
@@ -180,9 +199,12 @@ export async function POST(request) {
         )
     }
 
+    // owner_user_id / owner_email are legacy dual-writes until the post-005
+    // cleanup PR; participant_id is the identity going forward.
     const ownershipPayload = {
         event_id: eventData.id,
         access_mode: accessMode,
+        participant_id: participant?.id ?? null,
         owner_user_id: accessMode === 'google' ? session.user.id : null,
         owner_email: accessMode === 'google' ? normalizeEmail(session.user.email) : ownerEmail,
         manage_token: accessMode === 'link' ? makeManageToken() : null,

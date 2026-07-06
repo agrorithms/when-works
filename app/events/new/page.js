@@ -148,6 +148,11 @@ export default function NewEventPage() {
                     allow_plus_one: allowPlusOne,
                     access_mode: accessMode,
                     owner_email: null,
+                    // Links link-mode events to the guest's device-wide
+                    // participant (same key the respond page maintains).
+                    participantToken: typeof window !== 'undefined'
+                        ? localStorage.getItem('when_works_participant_token') || null
+                        : null,
                 }),
             })
 

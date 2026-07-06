@@ -1,16 +1,13 @@
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '../../../lib/auth'
 import { getSupabaseAdmin } from '../../../lib/supabaseAdmin'
+import { getParticipantByEmail, ensureParticipantForSession } from '../../../lib/participants'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
 const DATE_FORMATS = ['us', 'eu', 'iso']
 const TIME_FORMATS = ['auto', '12h', '24h']
-
-function normalizeEmail(email) {
-    return email ? email.trim().toLowerCase() : null
-}
 
 function isValidTimezone(tz) {
     try {
@@ -27,26 +24,23 @@ export async function GET() {
         return Response.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const email = normalizeEmail(session.user.email)
     const supabaseAdmin = getSupabaseAdmin()
 
-    const { data, error } = await supabaseAdmin
-        .from('user_profiles')
-        .select('display_name, default_timezone, date_format, time_format, email')
-        .eq('email', email)
-        .single()
+    // The signIn upsert is fire-and-forget, so the row may not exist yet.
+    const participant = await getParticipantByEmail(supabaseAdmin, session.user.email)
+        || await ensureParticipantForSession(supabaseAdmin, session)
 
-    if (error) {
+    if (!participant) {
         return Response.json({ error: 'Profile not found' }, { status: 404 })
     }
 
     return Response.json({
-        name: data.display_name ?? session.user.name,
-        display_name: data.display_name,
-        email: data.email,
-        default_timezone: data.default_timezone,
-        date_format: data.date_format,
-        time_format: data.time_format,
+        name: participant.display_name ?? session.user.name,
+        display_name: participant.display_name,
+        email: participant.email,
+        default_timezone: participant.default_timezone,
+        date_format: participant.date_format,
+        time_format: participant.time_format,
     })
 }
 
@@ -98,13 +92,17 @@ export async function PATCH(request) {
         return Response.json({ error: 'No valid fields to update' }, { status: 400 })
     }
 
-    const email = normalizeEmail(session.user.email)
     const supabaseAdmin = getSupabaseAdmin()
+    const participant = await ensureParticipantForSession(supabaseAdmin, session)
+
+    if (!participant) {
+        return Response.json({ error: 'Update failed' }, { status: 500 })
+    }
 
     const { error } = await supabaseAdmin
-        .from('user_profiles')
+        .from('participants')
         .update(updates)
-        .eq('email', email)
+        .eq('id', participant.id)
 
     if (error) {
         return Response.json({ error: 'Update failed' }, { status: 500 })

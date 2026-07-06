@@ -21,7 +21,8 @@ export async function GET(request) {
             .order('created_at', { ascending: false }),
         supabaseAdmin
             .from('responses')
-            .select('id, event_id, confirmed, includes_so'),
+            .select('id, event_id, confirmed, includes_so')
+            .is('deleted_at', null),
     ])
 
     if (eventsError || responsesError) {
