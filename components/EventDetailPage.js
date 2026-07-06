@@ -821,13 +821,13 @@ export default function EventDetailPage({
                             </p>
                             {activeSuggestedDiff && (activeSuggestedDiff.plus.length > 0 || activeSuggestedDiff.minus.length > 0) ? (
                                 <div style={{ fontSize: '0.76rem', display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
-                                    {activeSuggestedDiff.plus.map(name => (
-                                        <span key={`${activeSuggestedDate}-chip-plus-${name}`} style={{ color: '#86efac' }}>
+                                    {activeSuggestedDiff.plus.map((name, i) => (
+                                        <span key={`${activeSuggestedDate}-chip-plus-${i}-${name}`} style={{ color: '#86efac' }}>
                                             +{name}
                                         </span>
                                     ))}
-                                    {activeSuggestedDiff.minus.map(name => (
-                                        <span key={`${activeSuggestedDate}-chip-minus-${name}`} style={{ color: '#fca5a5' }}>
+                                    {activeSuggestedDiff.minus.map((name, i) => (
+                                        <span key={`${activeSuggestedDate}-chip-minus-${i}-${name}`} style={{ color: '#fca5a5' }}>
                                             -{name}
                                         </span>
                                     ))}
@@ -1413,13 +1413,13 @@ export default function EventDetailPage({
                                         </div>
                                         {bestDateDiffs[d.date] && (bestDateDiffs[d.date].plus.length > 0 || bestDateDiffs[d.date].minus.length > 0) && (
                                             <div style={{ fontSize: '0.78rem', marginTop: '0.4rem', display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
-                                                {bestDateDiffs[d.date].plus.map(name => (
-                                                    <span key={`${d.date}-plus-${name}`} style={{ color: '#86efac' }}>
+                                                {bestDateDiffs[d.date].plus.map((name, i) => (
+                                                    <span key={`${d.date}-plus-${i}-${name}`} style={{ color: '#86efac' }}>
                                                         +{name}
                                                     </span>
                                                 ))}
-                                                {bestDateDiffs[d.date].minus.map(name => (
-                                                    <span key={`${d.date}-minus-${name}`} style={{ color: '#fca5a5' }}>
+                                                {bestDateDiffs[d.date].minus.map((name, i) => (
+                                                    <span key={`${d.date}-minus-${i}-${name}`} style={{ color: '#fca5a5' }}>
                                                         -{name}
                                                     </span>
                                                 ))}

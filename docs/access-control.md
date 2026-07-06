@@ -13,7 +13,7 @@ All database access is server-side via the service-role client (`lib/supabaseAdm
 - Claim rules after resolution: signed-in + token-resolved row → repoint `participant_id` to the email participant (safe: step 1 proved it has no active row here). Guest + legacy-token row with null `participant_id` → attach the device participant. A legacy-token row that already belongs to a participant hands that participant's token back so the device adopts it.
 - `action:'start'` resolves-or-creates. Participants are only ever CREATED here (signed-in: on-demand upsert; guest: new participant when no token matches). `start` with `resolveOnly: true` is the page-load probe — it never creates, so viewing an event never mints an empty response. Responses return both `response_token` (until the post-005 cleanup) and `participant_token`.
 - `action:'save'` / `action:'hosting_info'` only resolve (claims with existing participants still apply on save); save applies validated partial updates (dates within range, blocked dates stripped)
-- **Token-only identity**: typing a name never claims an existing response; duplicate names create separate responses
+- **Token-only identity**: typing a name never claims an existing response; duplicate names create separate responses. A NEW respondent typing an already-taken name gets a server-assigned numbered suffix ("Louis A (2)"; case-insensitive on `name`; soft-deleted rows count as taken); a returning respondent (token-resolved) re-saving their own name is excluded from the check and keeps it
 - `google_email` (legacy dual-write, normalized) is only ever set server-side from the NextAuth session — never from client input
 
 **Follow-up Path** (`/followup/[token]`, backed by `/api/followup/[inviteToken]`):

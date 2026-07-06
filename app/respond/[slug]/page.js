@@ -66,6 +66,9 @@ export default function EventRespondPage() {
     const availableDatesRef = useRef([])
     const unavailableDatesRef = useRef([])
     const nameRef = useRef('')
+    // Last name the SERVER assigned (it may add a "(2)" suffix when the typed
+    // name is already taken) — matching values need no re-save.
+    const serverNameRef = useRef(null)
     const savedModeRef = useRef('available')
     const responseIdRef = useRef(null)
     const responseTokenRef = useRef(null)
@@ -204,15 +207,24 @@ export default function EventRespondPage() {
 
             const trimmedName = name.trim()
             if (!trimmedName) return
+            if (trimmedName === serverNameRef.current) return
 
             try {
-                await postRespond(slug, {
+                const payload = await postRespond(slug, {
                     action: 'save',
                     ...authTokens(),
                     name: trimmedName,
                 })
+                // localStorage keeps the TYPED name — the suffix is per-event
                 localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
-                setDisplayName(trimmedName)
+                const savedName = payload?.response?.display_name || trimmedName
+                setDisplayName(savedName)
+                if (savedName !== trimmedName && nameRef.current.trim() === trimmedName) {
+                    // Name was taken; the server suffixed it. Show the suffix
+                    // so the responder knows who they appear as.
+                    serverNameRef.current = savedName
+                    setName(savedName)
+                }
             } catch {
                 // Name save is retried on the next change or at confirm time
             }
@@ -348,6 +360,11 @@ export default function EventRespondPage() {
         if (session?.user?.email) {
             if (resolvedSignedInName) setName(resolvedSignedInName)
         } else if (!created && prev.name && !prev.name.startsWith('guest_')) {
+            serverNameRef.current = prev.display_name
+            setName(prev.display_name)
+        } else if (created && trimmedName && prev.display_name !== trimmedName) {
+            // The typed name was taken and the server suffixed it
+            serverNameRef.current = prev.display_name
             setName(prev.display_name)
         }
 
@@ -490,11 +507,16 @@ export default function EventRespondPage() {
         }
 
         try {
-            await postRespond(slug, updateData)
+            const payload = await postRespond(slug, updateData)
 
             if (trimmedName && !session?.user?.email) {
                 localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
-                setDisplayName(trimmedName)
+                const savedName = payload?.response?.display_name || trimmedName
+                setDisplayName(savedName)
+                if (savedName !== trimmedName) {
+                    serverNameRef.current = savedName
+                    setName(savedName)
+                }
             }
 
             setConfirmed(true)

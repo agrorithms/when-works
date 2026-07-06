@@ -204,6 +204,31 @@ async function getNextGuestNumber(supabaseAdmin, eventId) {
     return guestNumbers.length > 0 ? Math.max(...guestNumbers) + 1 : 1
 }
 
+// A NEW respondent typing an already-taken name gets a numbered suffix
+// ("Louis A (2)") so people stay distinguishable. Identity is token-based and
+// resolved before this runs, so a returning visitor editing their own row is
+// excluded and keeps their name. Deleted rows count as taken: restoring one
+// must not produce two identical names.
+async function dedupeDisplayName(supabaseAdmin, eventId, displayName, excludeResponseId = null) {
+    let query = supabaseAdmin
+        .from('responses')
+        .select('name')
+        .eq('event_id', eventId)
+    if (excludeResponseId) {
+        query = query.neq('id', excludeResponseId)
+    }
+    const { data } = await query
+
+    const taken = new Set((data || []).map((row) => row.name).filter(Boolean))
+    if (!taken.has(displayName.toLowerCase())) return displayName
+
+    for (let n = 2; ; n += 1) {
+        const suffix = ` (${n})`
+        const candidate = displayName.slice(0, MAX_NAME_LENGTH - suffix.length) + suffix
+        if (!taken.has(candidate.toLowerCase())) return candidate
+    }
+}
+
 function sanitizeDates(rawDates, event) {
     if (!Array.isArray(rawDates)) return null
 
@@ -328,9 +353,12 @@ export async function POST(request, context) {
             : ''
 
         let displayName = trimmedName
-        let internalName = trimmedName ? trimmedName.toLowerCase() : null
+        let internalName = null
 
-        if (!trimmedName) {
+        if (trimmedName) {
+            displayName = await dedupeDisplayName(supabaseAdmin, event.id, trimmedName)
+            internalName = displayName.toLowerCase()
+        } else {
             const guestNumber = await getNextGuestNumber(supabaseAdmin, event.id)
             displayName = `Guest #${guestNumber}`
             internalName = `guest_${guestNumber}`
@@ -413,8 +441,9 @@ export async function POST(request, context) {
                 ? body.name.trim().slice(0, MAX_NAME_LENGTH)
                 : ''
             if (trimmedName) {
-                updates.display_name = trimmedName
-                updates.name = trimmedName.toLowerCase()
+                const dedupedName = await dedupeDisplayName(supabaseAdmin, event.id, trimmedName, existing.id)
+                updates.display_name = dedupedName
+                updates.name = dedupedName.toLowerCase()
             }
         }
 
