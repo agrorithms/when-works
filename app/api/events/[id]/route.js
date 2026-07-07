@@ -43,6 +43,7 @@ export async function GET(_request, context) {
         .from('responses')
         .select('id, display_name, response_type, dates, confirmed, includes_so, created_at')
         .eq('event_id', params.id)
+        .is('deleted_at', null)
         .order('created_at', { ascending: false })
 
     if (responsesError) {

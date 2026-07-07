@@ -1,6 +1,15 @@
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '../../../../lib/auth'
 import { getSupabaseAdmin } from '../../../../lib/supabaseAdmin'
+import { getAttendeeWeight } from '../../../../lib/attendance'
+import {
+    normalizeEmail,
+    getParticipantByEmail,
+    ensureParticipantForSession,
+    getParticipantByToken,
+    createGuestParticipant,
+    claimResponseForParticipant,
+} from '../../../../lib/participants'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -9,15 +18,15 @@ const PUBLIC_EVENT_FIELDS = 'id, title, description, slug, date_range_start, dat
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_NAME_LENGTH = 80
+// Embeds the owning participant's token so the browser can adopt the
+// device-wide identity when it resolves a row via a legacy response_token.
+const OWN_RESPONSE_FIELDS = '*, participants(participant_token)'
 
-function getAttendeeWeight(response) {
-    return response.includes_so ? 2 : 1
-}
-
-// The respondent's own row, minus google_email. response_token is the
-// capability that authorizes future saves — it is only ever returned here,
-// to the browser that owns the session.
-function sanitizeOwnResponse(row) {
+// The respondent's own row, minus google_email. The two tokens are the
+// capabilities that authorize future saves — they are only ever returned
+// here, to the browser that owns the session. response_token stays in the
+// payload until the post-005 cleanup PR.
+function sanitizeOwnResponse(row, participantToken = null) {
     return {
         id: row.id,
         name: row.name,
@@ -27,6 +36,7 @@ function sanitizeOwnResponse(row) {
         confirmed: row.confirmed,
         includes_so: Boolean(row.includes_so),
         response_token: row.response_token,
+        participant_token: participantToken || row.participants?.participant_token || null,
     }
 }
 
@@ -46,6 +56,7 @@ async function getResponseCounts(supabaseAdmin, eventId) {
         .from('responses')
         .select('includes_so, confirmed')
         .eq('event_id', eventId)
+        .is('deleted_at', null)
 
     const rows = data || []
     return {
@@ -67,34 +78,113 @@ async function getOpenRound(supabaseAdmin, eventId) {
     return data && data.length > 0 ? data[0] : null
 }
 
-// Finds the respondent's own row: signed-in users by verified google_email,
-// guests by their response_token capability.
-async function resolveOwnResponse(supabaseAdmin, eventId, session, responseToken) {
-    if (session?.user?.email) {
-        const { data } = await supabaseAdmin
-            .from('responses')
-            .select('*')
-            .eq('event_id', eventId)
-            .eq('google_email', session.user.email)
-            .limit(1)
+async function getActiveResponseByParticipant(supabaseAdmin, eventId, participantId) {
+    const { data } = await supabaseAdmin
+        .from('responses')
+        .select(OWN_RESPONSE_FIELDS)
+        .eq('event_id', eventId)
+        .eq('participant_id', participantId)
+        .is('deleted_at', null)
+        .limit(1)
 
-        if (data && data.length > 0) return data[0]
-    }
-
-    if (typeof responseToken === 'string' && UUID_PATTERN.test(responseToken)) {
-        const { data } = await supabaseAdmin
-            .from('responses')
-            .select('*')
-            .eq('event_id', eventId)
-            .eq('response_token', responseToken)
-            .limit(1)
-
-        if (data && data.length > 0) return data[0]
-    }
-
-    return null
+    return data && data.length > 0 ? data[0] : null
 }
 
+// Finds the respondent's own ACTIVE row. Signed-in identity always wins over
+// device tokens (shared computers), then the device-wide participant_token,
+// then the legacy per-event response_token.
+async function resolveRespondent(supabaseAdmin, eventId, session, body) {
+    const sessionParticipant = session?.user?.email
+        ? await getParticipantByEmail(supabaseAdmin, session.user.email)
+        : null
+
+    if (sessionParticipant) {
+        const response = await getActiveResponseByParticipant(supabaseAdmin, eventId, sessionParticipant.id)
+        if (response) return { response, via: 'session', sessionParticipant, deviceParticipant: null }
+    }
+
+    const deviceParticipant = await getParticipantByToken(supabaseAdmin, body.participantToken)
+
+    if (deviceParticipant) {
+        const response = await getActiveResponseByParticipant(supabaseAdmin, eventId, deviceParticipant.id)
+        if (response) return { response, via: 'participant_token', sessionParticipant, deviceParticipant }
+    }
+
+    if (typeof body.responseToken === 'string' && UUID_PATTERN.test(body.responseToken)) {
+        const { data } = await supabaseAdmin
+            .from('responses')
+            .select(OWN_RESPONSE_FIELDS)
+            .eq('event_id', eventId)
+            .eq('response_token', body.responseToken)
+            .is('deleted_at', null)
+            .limit(1)
+
+        if (data && data.length > 0) {
+            return { response: data[0], via: 'response_token', sessionParticipant, deviceParticipant }
+        }
+    }
+
+    return { response: null, via: null, sessionParticipant, deviceParticipant }
+}
+
+// Claim rules, applied after resolution:
+//   - Signed-in + token-resolved row → repoint participant_id to the email
+//     participant (safe: session resolution already proved that participant
+//     has no active row on this event).
+//   - Guest + legacy-token-resolved row with null participant_id → attach the
+//     device participant.
+// Participants are only CREATED here when allowCreate is set (the `start`
+// action); save/hosting_info claim with existing participants only.
+// Returns { response, participantToken } — the token the browser should
+// store as its device-wide identity.
+async function applyClaims(supabaseAdmin, resolved, session, { allowCreate = false } = {}) {
+    const { via, sessionParticipant, deviceParticipant } = resolved
+    let response = resolved.response
+
+    if (!response) return { response: null, participantToken: null }
+
+    if (via === 'session') {
+        return { response, participantToken: sessionParticipant.participant_token }
+    }
+
+    if (session?.user?.email) {
+        const emailParticipant = sessionParticipant
+            || (allowCreate ? await ensureParticipantForSession(supabaseAdmin, session) : null)
+
+        if (emailParticipant && response.participant_id !== emailParticipant.id) {
+            response = await claimResponseForParticipant(supabaseAdmin, response, emailParticipant.id)
+        }
+
+        if (emailParticipant) {
+            return { response, participantToken: emailParticipant.participant_token }
+        }
+        // No participant yet (fire-and-forget signIn upsert failed and this
+        // isn't `start`): fall through to the token identities below.
+    }
+
+    if (via === 'participant_token') {
+        return { response, participantToken: deviceParticipant.participant_token }
+    }
+
+    // Legacy response_token hit. If the row already belongs to a participant,
+    // hand that participant's token back so this device adopts it.
+    if (response.participant_id) {
+        return { response, participantToken: response.participants?.participant_token || null }
+    }
+
+    const adopter = deviceParticipant
+        || (allowCreate ? await createGuestParticipant(supabaseAdmin) : null)
+
+    if (adopter) {
+        response = await claimResponseForParticipant(supabaseAdmin, response, adopter.id)
+        return { response, participantToken: adopter.participant_token }
+    }
+
+    return { response, participantToken: null }
+}
+
+// Deleted rows deliberately count here: restoring one must not collide with a
+// reissued "Guest #N".
 async function getNextGuestNumber(supabaseAdmin, eventId) {
     const { data } = await supabaseAdmin
         .from('responses')
@@ -112,6 +202,31 @@ async function getNextGuestNumber(supabaseAdmin, eventId) {
         .filter((n) => n > 0)
 
     return guestNumbers.length > 0 ? Math.max(...guestNumbers) + 1 : 1
+}
+
+// A NEW respondent typing an already-taken name gets a numbered suffix
+// ("Louis A (2)") so people stay distinguishable. Identity is token-based and
+// resolved before this runs, so a returning visitor editing their own row is
+// excluded and keeps their name. Deleted rows count as taken: restoring one
+// must not produce two identical names.
+async function dedupeDisplayName(supabaseAdmin, eventId, displayName, excludeResponseId = null) {
+    let query = supabaseAdmin
+        .from('responses')
+        .select('name')
+        .eq('event_id', eventId)
+    if (excludeResponseId) {
+        query = query.neq('id', excludeResponseId)
+    }
+    const { data } = await query
+
+    const taken = new Set((data || []).map((row) => row.name).filter(Boolean))
+    if (!taken.has(displayName.toLowerCase())) return displayName
+
+    for (let n = 2; ; n += 1) {
+        const suffix = ` (${n})`
+        const candidate = displayName.slice(0, MAX_NAME_LENGTH - suffix.length) + suffix
+        if (!taken.has(candidate.toLowerCase())) return candidate
+    }
 }
 
 function sanitizeDates(rawDates, event) {
@@ -159,6 +274,7 @@ export async function GET(_request, context) {
             .select('id, response_type, dates, includes_so')
             .eq('event_id', event.id)
             .eq('confirmed', true)
+            .is('deleted_at', null)
         confirmedResponses = data || []
     }
 
@@ -194,17 +310,42 @@ export async function POST(request, context) {
     const session = await getServerSession(authOptions)
 
     if (body.action === 'start') {
-        const existing = await resolveOwnResponse(supabaseAdmin, event.id, session, body.responseToken)
+        const resolved = await resolveRespondent(supabaseAdmin, event.id, session, body)
 
-        if (existing) {
+        if (resolved.response) {
+            const claimed = await applyClaims(supabaseAdmin, resolved, session, { allowCreate: true })
+            let existing = claimed.response
+
+            // Legacy dual-write: stamp the (normalized) session email onto
+            // rows that predate it. Removed in the post-005 cleanup PR.
             if (session?.user?.email && !existing.google_email) {
+                const email = normalizeEmail(session.user.email)
                 await supabaseAdmin
                     .from('responses')
-                    .update({ google_email: session.user.email })
+                    .update({ google_email: email })
                     .eq('id', existing.id)
-                existing.google_email = session.user.email
+                existing = { ...existing, google_email: email }
             }
-            return Response.json({ response: sanitizeOwnResponse(existing), created: false })
+
+            return Response.json({
+                response: sanitizeOwnResponse(existing, claimed.participantToken),
+                created: false,
+            })
+        }
+
+        // Returning-visitor probe (page load): report "nothing here" instead
+        // of creating a row — otherwise every guest with a device-wide token
+        // would mint an empty response just by viewing an event.
+        if (body.resolveOnly) {
+            return Response.json({ response: null, created: false })
+        }
+
+        // No existing row: pin down who this response will belong to.
+        let participant = null
+        if (session?.user?.email) {
+            participant = resolved.sessionParticipant || await ensureParticipantForSession(supabaseAdmin, session)
+        } else {
+            participant = resolved.deviceParticipant || await createGuestParticipant(supabaseAdmin)
         }
 
         const trimmedName = typeof body.name === 'string'
@@ -212,9 +353,12 @@ export async function POST(request, context) {
             : ''
 
         let displayName = trimmedName
-        let internalName = trimmedName ? trimmedName.toLowerCase() : null
+        let internalName = null
 
-        if (!trimmedName) {
+        if (trimmedName) {
+            displayName = await dedupeDisplayName(supabaseAdmin, event.id, trimmedName)
+            internalName = displayName.toLowerCase()
+        } else {
             const guestNumber = await getNextGuestNumber(supabaseAdmin, event.id)
             displayName = `Guest #${guestNumber}`
             internalName = `guest_${guestNumber}`
@@ -230,24 +374,42 @@ export async function POST(request, context) {
                 dates: [],
                 confirmed: false,
                 event_id: event.id,
-                google_email: session?.user?.email ?? null,
+                participant_id: participant?.id ?? null,
+                google_email: normalizeEmail(session?.user?.email),
             })
             .select('*')
             .single()
 
         if (insertError || !inserted) {
+            // Unique-index rejection: a concurrent `start` from the same
+            // participant won the race — return that row instead.
+            if (insertError?.code === '23505' && participant) {
+                const raced = await getActiveResponseByParticipant(supabaseAdmin, event.id, participant.id)
+                if (raced) {
+                    return Response.json({
+                        response: sanitizeOwnResponse(raced, participant.participant_token),
+                        created: false,
+                    })
+                }
+            }
             return Response.json({ error: 'Could not start a response session.' }, { status: 500 })
         }
 
-        return Response.json({ response: sanitizeOwnResponse(inserted), created: true })
+        return Response.json({
+            response: sanitizeOwnResponse(inserted, participant?.participant_token ?? null),
+            created: true,
+        })
     }
 
     if (body.action === 'save') {
-        const existing = await resolveOwnResponse(supabaseAdmin, event.id, session, body.responseToken)
+        const resolved = await resolveRespondent(supabaseAdmin, event.id, session, body)
 
-        if (!existing) {
+        if (!resolved.response) {
             return Response.json({ error: 'Response session not found.' }, { status: 404 })
         }
+
+        const claimed = await applyClaims(supabaseAdmin, resolved, session)
+        const existing = claimed.response
 
         const updates = {}
 
@@ -279,17 +441,18 @@ export async function POST(request, context) {
                 ? body.name.trim().slice(0, MAX_NAME_LENGTH)
                 : ''
             if (trimmedName) {
-                updates.display_name = trimmedName
-                updates.name = trimmedName.toLowerCase()
+                const dedupedName = await dedupeDisplayName(supabaseAdmin, event.id, trimmedName, existing.id)
+                updates.display_name = dedupedName
+                updates.name = dedupedName.toLowerCase()
             }
         }
 
         if (session?.user?.email && !existing.google_email) {
-            updates.google_email = session.user.email
+            updates.google_email = normalizeEmail(session.user.email)
         }
 
         if (Object.keys(updates).length === 0) {
-            return Response.json({ response: sanitizeOwnResponse(existing) })
+            return Response.json({ response: sanitizeOwnResponse(existing, claimed.participantToken) })
         }
 
         const { data: updated, error: updateError } = await supabaseAdmin
@@ -303,11 +466,12 @@ export async function POST(request, context) {
             return Response.json({ error: 'Could not save your response.' }, { status: 500 })
         }
 
-        return Response.json({ response: sanitizeOwnResponse(updated) })
+        return Response.json({ response: sanitizeOwnResponse(updated, claimed.participantToken) })
     }
 
     if (body.action === 'hosting_info') {
-        const existing = await resolveOwnResponse(supabaseAdmin, event.id, session, body.responseToken)
+        const resolved = await resolveRespondent(supabaseAdmin, event.id, session, body)
+        const existing = resolved.response
 
         if (!existing) {
             return Response.json({ error: 'Response session not found.' }, { status: 404 })
