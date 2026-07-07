@@ -3,7 +3,6 @@ import { authOptions } from '../../../../lib/auth'
 import { getSupabaseAdmin } from '../../../../lib/supabaseAdmin'
 import { getAttendeeWeight } from '../../../../lib/attendance'
 import {
-    normalizeEmail,
     getParticipantByEmail,
     ensureParticipantForSession,
     getParticipantByToken,
@@ -22,10 +21,10 @@ const MAX_NAME_LENGTH = 80
 // device-wide identity when it resolves a row via a legacy response_token.
 const OWN_RESPONSE_FIELDS = '*, participants(participant_token)'
 
-// The respondent's own row, minus google_email. The two tokens are the
-// capabilities that authorize future saves — they are only ever returned
-// here, to the browser that owns the session. response_token stays in the
-// payload until the post-005 cleanup PR.
+// The respondent's own row. participant_token is the capability that
+// authorizes future saves — it is only ever returned here, to the browser
+// that owns the session. Legacy response_token is still ACCEPTED in request
+// bodies (old browsers' per-slug localStorage) but never returned.
 function sanitizeOwnResponse(row, participantToken = null) {
     return {
         id: row.id,
@@ -35,7 +34,6 @@ function sanitizeOwnResponse(row, participantToken = null) {
         dates: row.dates || [],
         confirmed: row.confirmed,
         includes_so: Boolean(row.includes_so),
-        response_token: row.response_token,
         participant_token: participantToken || row.participants?.participant_token || null,
     }
 }
@@ -314,21 +312,9 @@ export async function POST(request, context) {
 
         if (resolved.response) {
             const claimed = await applyClaims(supabaseAdmin, resolved, session, { allowCreate: true })
-            let existing = claimed.response
-
-            // Legacy dual-write: stamp the (normalized) session email onto
-            // rows that predate it. Removed in the post-005 cleanup PR.
-            if (session?.user?.email && !existing.google_email) {
-                const email = normalizeEmail(session.user.email)
-                await supabaseAdmin
-                    .from('responses')
-                    .update({ google_email: email })
-                    .eq('id', existing.id)
-                existing = { ...existing, google_email: email }
-            }
 
             return Response.json({
-                response: sanitizeOwnResponse(existing, claimed.participantToken),
+                response: sanitizeOwnResponse(claimed.response, claimed.participantToken),
                 created: false,
             })
         }
@@ -375,7 +361,6 @@ export async function POST(request, context) {
                 confirmed: false,
                 event_id: event.id,
                 participant_id: participant?.id ?? null,
-                google_email: normalizeEmail(session?.user?.email),
             })
             .select('*')
             .single()
@@ -445,10 +430,6 @@ export async function POST(request, context) {
                 updates.display_name = dedupedName
                 updates.name = dedupedName.toLowerCase()
             }
-        }
-
-        if (session?.user?.email && !existing.google_email) {
-            updates.google_email = normalizeEmail(session.user.email)
         }
 
         if (Object.keys(updates).length === 0) {

@@ -12,14 +12,12 @@ The app's main tables:
 3. **responses** - Respondent availability (name, display_name, response_type: available/unavailable, dates array, confirmed status, includes_so boolean)
    - `participant_id` → participants (on delete set null). Partial unique index `responses_event_participant_active_idx` enforces one ACTIVE response per participant per event (null participant_id exempt).
    - `deleted_at` — owner-side soft delete. Deleted rows are excluded from all counts, public payloads, hosting rounds, and respondent resolution; they are restorable from the owner page (restore conflicts with a newer active row → 409).
-   - `response_token` uuid — the legacy per-event guest edit capability. Still resolved indefinitely (old browsers hold per-slug localStorage keys) and adopted into the visitor's device participant on next visit; no longer written client-side.
-   - `google_email` — LEGACY, dual-written (normalized) until `005_cleanup_legacy_identity.sql`; identity lives on the participant.
-4. **event_ownerships** - Event access control (`participant_id` → participants is the identity going forward; `owner_user_id`/`owner_email` are legacy dual-writes until 005; `manage_token` for private links)
+   - `response_token` uuid — the legacy per-event guest edit capability. Still accepted in request bodies indefinitely (old browsers hold per-slug localStorage keys) and adopted into the visitor's device participant on next visit; never returned in payloads or written client-side.
+4. **event_ownerships** - Event access control (`participant_id` → participants is THE owner identity; `manage_token` for private links)
 5. **event_followups** - Hosting rounds (selected_date, timezone, status: draft/open/closed, calendar sync fields)
 6. **event_followup_invites** - Tokenized invites for follow-up coordination (links responses to followups with unique invite_tokens)
 7. **event_followup_answers** - Hosting responses (still_available boolean, preferred_start_time)
-8. **user_profiles** - LEGACY, superseded by participants. Dropped by `005_cleanup_legacy_identity.sql` after the post-deploy soak.
 
 All tables have RLS enabled with NO public policies (see `supabase/migrations/002_drop_public_policies.sql` and 003 for participants) — the anon role can read/write nothing. All access goes through service-role API routes.
 
-Migration state: 003 (schema) and 004 (re-runnable backfill of email identities; guests adopt lazily) run before the participants code deploys; 004 re-runs after the deploy to catch the window; 005 (destructive column/table drops) runs only after verification + soak, together with the cleanup code PR that removes dual-writes and legacy fallbacks.
+Migration state: 001–005 have all run. 005 dropped the legacy identity surfaces (`responses.google_email`, `event_ownerships.owner_user_id`/`owner_email`, the `user_profiles` table) — code must never reference them. IMPORTANT: 005 and the cleanup code deploy must land together; code that writes the dropped columns errors against the post-005 schema.

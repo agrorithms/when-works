@@ -1,7 +1,7 @@
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '../../../../lib/auth'
 import { getSupabaseAdmin } from '../../../../lib/supabaseAdmin'
-import { normalizeEmail, legacyEmailPattern, getParticipantByEmail } from '../../../../lib/participants'
+import { normalizeEmail, getParticipantByEmail } from '../../../../lib/participants'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -55,28 +55,19 @@ export async function POST(request) {
             }
         }
 
-        // Legacy table; removed with 005.
-        await supabase.from('user_profiles').delete().eq('email', email)
-
         return Response.json({ ok: true })
     }
 
     // scope === 'all': delete in dependency order.
-    // 1. Find owned event IDs — participant linkage plus the legacy
-    //    owner_email column (dropped with 005).
-    const ownershipQueries = [
-        supabase.from('event_ownerships').select('event_id').eq('owner_email', email),
-    ]
+    // 1. Find owned event IDs.
+    let ownedEventIds = []
     if (participant) {
-        ownershipQueries.push(
-            supabase.from('event_ownerships').select('event_id').eq('participant_id', participant.id)
-        )
+        const { data } = await supabase
+            .from('event_ownerships')
+            .select('event_id')
+            .eq('participant_id', participant.id)
+        ownedEventIds = [...new Set((data ?? []).map((o) => o.event_id))]
     }
-
-    const ownershipResults = await Promise.all(ownershipQueries)
-    const ownedEventIds = [...new Set(
-        ownershipResults.flatMap(({ data }) => (data ?? []).map((o) => o.event_id))
-    )]
 
     // 2. Delete responses to owned events (cascade kills their invites + answers)
     if (ownedEventIds.length > 0) {
@@ -92,22 +83,13 @@ export async function POST(request) {
             .in('id', ownedEventIds)
     }
 
-    // 4. Delete responses to other events: participant linkage plus legacy
-    //    google_email rows (raw-cased values matched case-insensitively).
+    // 4. Delete responses to other events, then the participant row itself.
     if (participant) {
         await supabase
             .from('responses')
             .delete()
             .eq('participant_id', participant.id)
-    }
-    await supabase
-        .from('responses')
-        .delete()
-        .ilike('google_email', legacyEmailPattern(email))
 
-    // 5. Delete the identity rows themselves.
-    await supabase.from('user_profiles').delete().eq('email', email)
-    if (participant) {
         await supabase.from('participants').delete().eq('id', participant.id)
     }
 

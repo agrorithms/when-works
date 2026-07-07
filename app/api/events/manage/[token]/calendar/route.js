@@ -3,7 +3,6 @@ import { authOptions } from '../../../../../../lib/auth'
 import { getSupabaseAdmin } from '../../../../../../lib/supabaseAdmin'
 import { resolveOwnership } from '../../../../../../lib/ownership'
 import { isResponseAvailableOnDate } from '../../../../../../lib/attendance'
-import { normalizeEmail } from '../../../../../../lib/participants'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -78,9 +77,7 @@ export async function POST(request, context) {
         return Response.json({ error: responsesError.message }, { status: 500 })
     }
 
-    // Participant email is the source of truth; normalized google_email
-    // covers rows the backfill hasn't linked yet (dropped post-005).
-    const attendeeEmail = (r) => r.participants?.email || normalizeEmail(r.google_email)
+    const attendeeEmail = (r) => r.participants?.email || null
 
     const availableResponses = (responses || []).filter(r => isResponseAvailableOnDate(r, selectedDate))
     const withEmail = availableResponses.filter(r => attendeeEmail(r))

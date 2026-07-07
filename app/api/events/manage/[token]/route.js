@@ -7,10 +7,10 @@ import { isResponseAvailableOnDate } from '../../../../../lib/attendance'
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
-// Explicit column list: google_email and response_token must never ride
-// along in the owner payload. participants(email) is joined only to compute
-// has_email, then stripped.
-const MANAGED_RESPONSE_COLUMNS = 'id, event_id, name, display_name, response_type, dates, confirmed, includes_so, created_at, deleted_at, participant_id, google_email, participants(email)'
+// Explicit column list: response_token must never ride along in the owner
+// payload. participants(email) is joined only to compute has_email, then
+// stripped.
+const MANAGED_RESPONSE_COLUMNS = 'id, event_id, name, display_name, response_type, dates, confirmed, includes_so, created_at, deleted_at, participant_id, participants(email)'
 
 function sanitizeManagedResponse(row) {
     return {
@@ -25,9 +25,7 @@ function sanitizeManagedResponse(row) {
         created_at: row.created_at,
         deleted_at: row.deleted_at,
         participant_id: row.participant_id,
-        // google_email fallback covers rows the backfill hasn't linked yet;
-        // goes away with the post-005 cleanup PR.
-        has_email: Boolean(row.participants?.email || row.google_email),
+        has_email: Boolean(row.participants?.email),
     }
 }
 
