@@ -24,49 +24,18 @@ async function getOwnedEventsForSession(session) {
 
     const email = normalizeEmail(session.user.email)
     const participant = await getParticipantByEmail(supabaseAdmin, email)
+    if (!participant) return []
 
-    const participantQuery = participant
-        ? supabaseAdmin
-            .from('event_ownerships')
-            .select('*')
-            .eq('participant_id', participant.id)
-        : Promise.resolve({ data: [], error: null })
-
-    // Legacy fallback until the post-005 cleanup PR: rows old code wrote by
-    // email that the backfill hasn't linked yet.
-    const emailQuery = email
-        ? supabaseAdmin
-            .from('event_ownerships')
-            .select('*')
-            .eq('owner_email', email)
-        : Promise.resolve({ data: [], error: null })
-
-    const [{ data: participantRows, error: participantError }, { data: emailRows, error: emailError }] = await Promise.all([
-        participantQuery,
-        emailQuery,
-    ])
+    const { data: participantRows, error: participantError } = await supabaseAdmin
+        .from('event_ownerships')
+        .select('*')
+        .eq('participant_id', participant.id)
 
     if (participantError) {
         throw participantError
     }
 
-    if (emailError) {
-        throw emailError
-    }
-
-    const rows = [...(participantRows || []), ...(emailRows || [])]
-        .filter((row, index, allRows) => index === allRows.findIndex((candidate) => candidate.event_id === row.event_id))
-
-    const claimableRows = rows.filter((row) => !row.participant_id)
-    if (claimableRows.length > 0) {
-        const claimant = participant || await ensureParticipantForSession(supabaseAdmin, session)
-        if (claimant) {
-            await supabaseAdmin
-                .from('event_ownerships')
-                .update({ participant_id: claimant.id })
-                .in('id', claimableRows.map((row) => row.id))
-        }
-    }
+    const rows = participantRows || []
 
     const eventIds = [...new Set(rows.map((row) => row.event_id))]
     if (eventIds.length === 0) return []
@@ -155,7 +124,6 @@ export async function POST(request) {
     const showAvailabilityCounts = Boolean(body.show_availability_counts)
     const allowPlusOne = Boolean(body.allow_plus_one)
     const accessMode = body.access_mode
-    const ownerEmail = normalizeEmail(body.owner_email)
 
     if (!title || !slug || !dateRangeStart || !dateRangeEnd || !responseDeadline || !accessMode) {
         return Response.json({ error: 'Missing required fields.' }, { status: 400 })
@@ -199,14 +167,10 @@ export async function POST(request) {
         )
     }
 
-    // owner_user_id / owner_email are legacy dual-writes until the post-005
-    // cleanup PR; participant_id is the identity going forward.
     const ownershipPayload = {
         event_id: eventData.id,
         access_mode: accessMode,
         participant_id: participant?.id ?? null,
-        owner_user_id: accessMode === 'google' ? session.user.id : null,
-        owner_email: accessMode === 'google' ? normalizeEmail(session.user.email) : ownerEmail,
         manage_token: accessMode === 'link' ? makeManageToken() : null,
     }
 

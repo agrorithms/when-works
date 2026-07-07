@@ -1,7 +1,7 @@
 ### Session & Confirmation Flow
 
 1. User can make date selections before providing name (pending toggles in ref)
-2. First selection triggers session creation (`POST /api/respond/[slug]` action `'start'`), which returns the response row plus both tokens: the legacy `response_token` (kept in memory for this page load) and the device-wide `participant_token` (stored in the global localStorage key)
+2. First selection triggers session creation (`POST /api/respond/[slug]` action `'start'`), which returns the response row plus the device-wide `participant_token` (stored in the global localStorage key)
 3. Sessions auto-resume on page load: signed-in users from the server-side participant/email match; guests via a `resolveOnly: true` start probe against the stored participant token (or a legacy per-slug response token) — the probe never creates a row, so merely viewing an event mints nothing. Resolution never uses a typed name (token-only identity: duplicate names create separate responses)
 4. Name changes debounced and auto-saved. Duplicate names: the server suffixes a NEW respondent's already-taken name ("Louis A (2)") at `start`/name-save time; the client adopts the returned `display_name` into the input (tracked in `serverNameRef` to avoid a re-save loop; the un-suffixed typed name is what goes to `when_works_name` localStorage)
 5. "Confirm" locks in state (confirmed: true), prevents further edits unless explicitly reset
@@ -9,7 +9,7 @@
 ### Key Client-Side Patterns
 
 **State Management**:
-- React hooks with refs for debounced saves (availableDatesRef, unavailableDatesRef, responseIdRef, responseTokenRef, participantTokenRef)
+- React hooks with refs for debounced saves (availableDatesRef, unavailableDatesRef, responseIdRef, participantTokenRef)
 - Separate UI state (availableDates/unavailableDates) from saved data in refs to prevent race conditions
 - useCallback dependencies carefully scoped to avoid infinite loops during auto-saves
 
