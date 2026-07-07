@@ -26,7 +26,9 @@ No test suite configured.
 - **Admin password is `ADMIN_PASSWORD`** — server-only, checked per-request via the `x-admin-password` header (`lib/adminAuth.js`). Never expose it in a `NEXT_PUBLIC_` var.
 - **API routes** require `dynamic = 'force-dynamic'` and `runtime = 'nodejs'` for NextAuth.
 - **The browser never talks to Supabase.** All reads/writes go through `app/api/` routes using the service-role client; RLS denies the anon role on every table. Never add `@supabase/supabase-js` usage to client components.
-- **Capability tokens are the guest auth model**: `manage_token` (owner), `response_token` (respondent), `invite_token` (hosting follow-up). Tokens are minted server-side and stored in the visitor's localStorage.
+- **Capability tokens are the guest auth model**: `manage_token` (owner), `participant_token` (device-wide identity, global localStorage key `when_works_participant_token`), `response_token` (legacy per-event respondent token — still resolved, never written client-side anymore), `invite_token` (hosting follow-up). Tokens are minted server-side and stored in the visitor's localStorage.
+- **Identity = participants table** (`lib/participants.js`): signed-in users resolve by normalized email, guests by `participant_token`. `google_email`/`owner_user_id`/`owner_email` are legacy dual-writes until `005_cleanup_legacy_identity.sql` runs. Emails are ALWAYS normalized (`normalizeEmail`) before storage or lookup.
+- **Responses soft-delete** via `deleted_at` — every responses query must filter `.is('deleted_at', null)` unless it deliberately wants deleted rows (guest numbering, owner restore list, export).
 
 ## Where things live
 

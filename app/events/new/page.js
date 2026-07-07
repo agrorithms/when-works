@@ -132,35 +132,44 @@ export default function NewEventPage() {
         setCreateLoading(true)
         setCreateError('')
 
-        const response = await fetch('/api/events', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                title: newTitle.trim(),
-                description: newDescription.trim() || null,
-                slug: newSlug.trim(),
-                date_range_start: newStartDate,
-                date_range_end: newEndDate,
-                response_deadline: newResponseDeadline,
-                blocked_dates: newBlockedDates,
-                show_availability_counts: showAvailabilityCounts,
-                allow_plus_one: allowPlusOne,
-                access_mode: accessMode,
-                owner_email: null,
-            }),
-        })
+        try {
+            const response = await fetch('/api/events', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    title: newTitle.trim(),
+                    description: newDescription.trim() || null,
+                    slug: newSlug.trim(),
+                    date_range_start: newStartDate,
+                    date_range_end: newEndDate,
+                    response_deadline: newResponseDeadline,
+                    blocked_dates: newBlockedDates,
+                    show_availability_counts: showAvailabilityCounts,
+                    allow_plus_one: allowPlusOne,
+                    access_mode: accessMode,
+                    owner_email: null,
+                    // Links link-mode events to the guest's device-wide
+                    // participant (same key the respond page maintains).
+                    participantToken: typeof window !== 'undefined'
+                        ? localStorage.getItem('when_works_participant_token') || null
+                        : null,
+                }),
+            })
 
-        const payload = await response.json()
+            const payload = await response.json().catch(() => ({}))
 
-        if (!response.ok) {
-            setCreateError(payload.error || 'Something went wrong.')
+            if (!response.ok) {
+                setCreateError(payload.error || 'Something went wrong.')
+                return
+            }
+
+            setCreatedEvent(payload.event)
+            setCreated(true)
+        } catch {
+            setCreateError('Something went wrong. Please try again.')
+        } finally {
             setCreateLoading(false)
-            return
         }
-
-        setCreatedEvent(payload.event)
-        setCreated(true)
-        setCreateLoading(false)
     }
 
     useEffect(() => {

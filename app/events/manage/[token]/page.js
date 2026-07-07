@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import EventDetailPage from '../../../admin/events/[id]/page'
+import EventDetailPage from '../../../../components/EventDetailPage'
 import { saveOwnerToken } from '../../../../lib/savedOwnerTokens'
 
 export default function OwnerLinkPage() {

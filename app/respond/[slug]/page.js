@@ -5,9 +5,14 @@ import { useParams } from 'next/navigation'
 import { useSession } from 'next-auth/react'
 import Calendar from '../../../components/Calendar'
 import Link from 'next/link'
+import { getAttendeeWeight } from '../../../lib/attendance'
 
 const NAME_STORAGE_KEY = 'when_works_name'
 const SAVED_INVITES_KEY = 'when_works_saved_invites'
+// Device-wide identity, shared across all events. The per-slug response
+// token key below is legacy: still read so pre-participant browsers keep
+// their responses, never written anymore.
+const PARTICIPANT_TOKEN_KEY = 'when_works_participant_token'
 const getTokenKey = (slug) => `when_works_response_token_${slug}`
 
 async function postRespond(slug, body) {
@@ -24,6 +29,11 @@ async function postRespond(slug, body) {
 function readStoredToken(slug) {
     if (typeof window === 'undefined') return null
     return localStorage.getItem(getTokenKey(slug)) || null
+}
+
+function readParticipantToken() {
+    if (typeof window === 'undefined') return null
+    return localStorage.getItem(PARTICIPANT_TOKEN_KEY) || null
 }
 
 export default function EventRespondPage() {
@@ -56,9 +66,13 @@ export default function EventRespondPage() {
     const availableDatesRef = useRef([])
     const unavailableDatesRef = useRef([])
     const nameRef = useRef('')
+    // Last name the SERVER assigned (it may add a "(2)" suffix when the typed
+    // name is already taken) — matching values need no re-save.
+    const serverNameRef = useRef(null)
     const savedModeRef = useRef('available')
     const responseIdRef = useRef(null)
     const responseTokenRef = useRef(null)
+    const participantTokenRef = useRef(null)
     const saveTimeout = useRef(null)
     const nameTimeout = useRef(null)
     const includesSOTimeout = useRef(null)
@@ -82,7 +96,25 @@ export default function EventRespondPage() {
         : null
 
     const selectedDates = mode === 'available' ? availableDates : unavailableDates
-    const getAttendeeWeight = (response) => response.includes_so ? 2 : 1
+
+    // Both tokens ride on every write: the device-wide participant token,
+    // plus the legacy per-event response token so old saved identities still
+    // resolve (and get adopted server-side).
+    const authTokens = useCallback(() => ({
+        participantToken: participantTokenRef.current || readParticipantToken(),
+        responseToken: responseTokenRef.current || readStoredToken(slug),
+    }), [slug])
+
+    const storeParticipantToken = useCallback((token) => {
+        if (!token) return
+        participantTokenRef.current = token
+        try {
+            localStorage.setItem(PARTICIPANT_TOKEN_KEY, token)
+        } catch {
+            // Storage may be unavailable (private mode); the ref still works
+            // for this page load.
+        }
+    }, [])
 
     const isAvailableOnDate = useCallback((responseType, dates, dateStr) => {
         const selected = dates || []
@@ -175,15 +207,24 @@ export default function EventRespondPage() {
 
             const trimmedName = name.trim()
             if (!trimmedName) return
+            if (trimmedName === serverNameRef.current) return
 
             try {
-                await postRespond(slug, {
+                const payload = await postRespond(slug, {
                     action: 'save',
-                    responseToken: responseTokenRef.current,
+                    ...authTokens(),
                     name: trimmedName,
                 })
+                // localStorage keeps the TYPED name — the suffix is per-event
                 localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
-                setDisplayName(trimmedName)
+                const savedName = payload?.response?.display_name || trimmedName
+                setDisplayName(savedName)
+                if (savedName !== trimmedName && nameRef.current.trim() === trimmedName) {
+                    // Name was taken; the server suffixed it. Show the suffix
+                    // so the responder knows who they appear as.
+                    serverNameRef.current = savedName
+                    setName(savedName)
+                }
             } catch {
                 // Name save is retried on the next change or at confirm time
             }
@@ -192,7 +233,7 @@ export default function EventRespondPage() {
         return () => {
             if (nameTimeout.current) clearTimeout(nameTimeout.current)
         }
-    }, [name, sessionStarted, displayName, slug, session?.user?.email])
+    }, [name, sessionStarted, displayName, slug, session?.user?.email, authTokens])
 
     useEffect(() => {
         if (!responseIdRef.current || !sessionStarted) return
@@ -205,7 +246,7 @@ export default function EventRespondPage() {
             try {
                 await postRespond(slug, {
                     action: 'save',
-                    responseToken: responseTokenRef.current,
+                    ...authTokens(),
                     includes_so: includesSO,
                 })
 
@@ -222,7 +263,7 @@ export default function EventRespondPage() {
         return () => {
             if (includesSOTimeout.current) clearTimeout(includesSOTimeout.current)
         }
-    }, [includesSO, sessionStarted, slug])
+    }, [includesSO, sessionStarted, slug, authTokens])
 
     const scheduleSave = useCallback(() => {
         if (saveTimeout.current) clearTimeout(saveTimeout.current)
@@ -241,13 +282,14 @@ export default function EventRespondPage() {
                 : [...unavailableDatesRef.current]
 
             try {
-                await postRespond(slug, {
+                const data = await postRespond(slug, {
                     action: 'save',
-                    responseToken: responseTokenRef.current,
+                    ...authTokens(),
                     response_type: currentMode,
                     dates: datesToSave.sort(),
                     confirmed: false,
                 })
+                storeParticipantToken(data?.response?.participant_token)
             } catch (updateError) {
                 console.error('Auto-save error:', updateError)
             }
@@ -259,7 +301,7 @@ export default function EventRespondPage() {
                 setSaveStatus(prev => prev === 'saved' ? 'idle' : prev)
             }, 2000)
         }, 2000)
-    }, [slug])
+    }, [slug, authTokens, storeParticipantToken])
 
     const applyDateToggle = (dates, dateStr) => {
         return dates.includes(dateStr)
@@ -267,7 +309,7 @@ export default function EventRespondPage() {
             : [...dates, dateStr]
     }
 
-    const startSession = useCallback(async (sessionDisplayName) => {
+    const startSession = useCallback(async (sessionDisplayName, { resolveOnly = false } = {}) => {
         if (sessionStarting.current) return
         if (!eventRef.current) return
 
@@ -280,9 +322,10 @@ export default function EventRespondPage() {
         try {
             payload = await postRespond(slug, {
                 action: 'start',
-                responseToken: readStoredToken(slug),
+                ...authTokens(),
                 name: trimmedName || null,
                 includesSO,
+                resolveOnly,
             })
         } catch (startError) {
             setError('Something went wrong. Please try again.')
@@ -291,10 +334,19 @@ export default function EventRespondPage() {
             return
         }
 
+        // resolveOnly probe found nothing — stay idle until the user acts.
+        if (!payload.response) {
+            sessionStarting.current = false
+            return
+        }
+
         const { response: prev, created } = payload
 
-        localStorage.setItem(getTokenKey(slug), prev.response_token)
+        // The per-slug localStorage key is no longer written — the
+        // device-wide participant token replaces it. response_token is kept
+        // in memory for this page load's saves.
         responseTokenRef.current = prev.response_token
+        storeParticipantToken(prev.participant_token)
 
         setResponseId(prev.id)
         responseIdRef.current = prev.id
@@ -308,6 +360,11 @@ export default function EventRespondPage() {
         if (session?.user?.email) {
             if (resolvedSignedInName) setName(resolvedSignedInName)
         } else if (!created && prev.name && !prev.name.startsWith('guest_')) {
+            serverNameRef.current = prev.display_name
+            setName(prev.display_name)
+        } else if (created && trimmedName && prev.display_name !== trimmedName) {
+            // The typed name was taken and the server suffixed it
+            serverNameRef.current = prev.display_name
             setName(prev.display_name)
         }
 
@@ -342,7 +399,7 @@ export default function EventRespondPage() {
             scheduleSave()
         }
         sessionStarting.current = false
-    }, [includesSO, scheduleSave, slug, session, resolvedSignedInName])
+    }, [includesSO, scheduleSave, slug, session, resolvedSignedInName, authTokens, storeParticipantToken])
 
     const processDateToggle = useCallback((dateStr) => {
         if (resetSnapshot) {
@@ -401,8 +458,11 @@ export default function EventRespondPage() {
                 startSession(resolvedSignedInName)
                 return
             }
-            if (readStoredToken(slug)) {
-                startSession(null)
+            // Guest revisit: resolve an existing response (via the
+            // device-wide participant token or a legacy per-slug token) but
+            // never create one on page view.
+            if (readStoredToken(slug) || readParticipantToken()) {
+                startSession(null, { resolveOnly: true })
             }
         }, 0)
 
@@ -435,7 +495,7 @@ export default function EventRespondPage() {
 
         const updateData = {
             action: 'save',
-            responseToken: responseTokenRef.current,
+            ...authTokens(),
             includes_so: includesSO,
             response_type: mode,
             dates: datesToConfirm.sort(),
@@ -447,11 +507,16 @@ export default function EventRespondPage() {
         }
 
         try {
-            await postRespond(slug, updateData)
+            const payload = await postRespond(slug, updateData)
 
             if (trimmedName && !session?.user?.email) {
                 localStorage.setItem(NAME_STORAGE_KEY, trimmedName)
-                setDisplayName(trimmedName)
+                const savedName = payload?.response?.display_name || trimmedName
+                setDisplayName(savedName)
+                if (savedName !== trimmedName) {
+                    serverNameRef.current = savedName
+                    setName(savedName)
+                }
             }
 
             setConfirmed(true)
@@ -582,7 +647,7 @@ export default function EventRespondPage() {
             try {
                 data = await postRespond(slug, {
                     action: 'hosting_info',
-                    responseToken: responseTokenRef.current,
+                    ...authTokens(),
                 })
             } catch {
                 data = null
@@ -605,7 +670,7 @@ export default function EventRespondPage() {
         }
 
         loadHostingInfo()
-    }, [confirmed, event?.id, responseId, mode, availableDates, unavailableDates, isAvailableOnDate, slug])
+    }, [confirmed, event?.id, responseId, mode, availableDates, unavailableDates, isAvailableOnDate, slug, authTokens])
 
     if (eventLoading) {
         return (
