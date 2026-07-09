@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '../../../../../lib/auth'
 import { getSupabaseAdmin } from '../../../../../lib/supabaseAdmin'
@@ -7,13 +8,32 @@ import {
     loadGroupBundle,
     sanitizeGroup,
     sanitizeMember,
+    sanitizeSchedule,
+    getGroupSchedule,
+    todayDateString,
 } from '../../../../../lib/groups'
 import { normalizeEmail } from '../../../../../lib/participants'
+import {
+    validateCadence,
+    validateScheduleConfig,
+    computeFirstWindow,
+    computeCursor,
+} from '../../../../../lib/schedule'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
-const CADENCE_PRESETS = [7, 14, 30, 60, 90]
+// The latest linked event anchors the schedule cursor: it covers the current
+// period, so the first auto window is the following one.
+async function getLatestGroupEvent(supabaseAdmin, groupId) {
+    const { data } = await supabaseAdmin
+        .from('events')
+        .select('id, date_range_start, date_range_end')
+        .eq('group_id', groupId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+    return data && data.length > 0 ? data[0] : null
+}
 
 async function resolveAccess(request, context) {
     const supabaseAdmin = getSupabaseAdmin()
@@ -85,6 +105,7 @@ export async function POST(request, context) {
 
     if (body.action === 'update_group') {
         const updates = {}
+        let cadenceChanged = false
 
         if (body.name !== undefined) {
             const name = (body.name || '').trim().slice(0, 80)
@@ -94,16 +115,51 @@ export async function POST(request, context) {
             updates.name = name
         }
 
-        if (body.cadence_days !== undefined) {
-            const cadenceDays = body.cadence_days == null ? null : Number(body.cadence_days)
-            if (cadenceDays !== null && !CADENCE_PRESETS.includes(cadenceDays)) {
-                return Response.json({ error: 'Invalid cadence.' }, { status: 400 })
+        if (body.cadence !== undefined) {
+            const cadenceResult = validateCadence(body.cadence)
+            if (cadenceResult.error) {
+                return Response.json({ error: cadenceResult.error }, { status: 400 })
             }
-            updates.cadence_days = cadenceDays
+            const cadence = cadenceResult.cadence
+            updates.cadence_unit = cadence?.unit ?? null
+            updates.cadence_interval = cadence?.interval ?? null
+            updates.cadence_anchor_day = cadence?.anchor_day ?? null
+            cadenceChanged = updates.cadence_unit !== group.cadence_unit
+                || updates.cadence_interval !== group.cadence_interval
+                || updates.cadence_anchor_day !== group.cadence_anchor_day
         }
 
         if (Object.keys(updates).length === 0) {
             return Response.json({ error: 'Nothing to update.' }, { status: 400 })
+        }
+
+        // A cadence change re-anchors any active schedule; the schedule
+        // config must still fit the new cadence or the change is rejected
+        // (the owner edits/pauses automatic polls first).
+        let rescheduled = null
+        if (cadenceChanged) {
+            const { schedule, error: scheduleError } = await getGroupSchedule(supabaseAdmin, group.id)
+            if (scheduleError) {
+                return Response.json({ error: scheduleError }, { status: 500 })
+            }
+
+            if (schedule && !schedule.paused_at) {
+                const nextGroup = { ...group, ...updates }
+                if (!nextGroup.cadence_unit) {
+                    return Response.json({ error: 'Pause automatic polls before removing the cadence.' }, { status: 400 })
+                }
+                const configResult = validateScheduleConfig(nextGroup, schedule)
+                if (configResult.error) {
+                    return Response.json({ error: `Automatic polls don't fit this cadence: ${configResult.error} Edit the automatic-poll settings first.` }, { status: 400 })
+                }
+                rescheduled = {
+                    id: schedule.id,
+                    ...computeFirstWindow(nextGroup, configResult.config, {
+                        anchorEvent: await getLatestGroupEvent(supabaseAdmin, group.id),
+                        today: todayDateString(),
+                    }),
+                }
+            }
         }
 
         const { data: updated, error: updateError } = await supabaseAdmin
@@ -117,7 +173,118 @@ export async function POST(request, context) {
             return Response.json({ error: 'Could not update the group.' }, { status: 500 })
         }
 
+        if (rescheduled) {
+            const { id: scheduleId, ...cursor } = rescheduled
+            await supabaseAdmin
+                .from('group_schedules')
+                .update({ ...cursor, presend_notice_sent_for: null, updated_at: new Date().toISOString() })
+                .eq('id', scheduleId)
+        }
+
         return Response.json({ group: sanitizeGroup(updated) })
+    }
+
+    if (body.action === 'update_schedule') {
+        const configResult = validateScheduleConfig(group, {
+            excluded_weekdays: body.excluded_weekdays,
+            send_day_of_month: body.send_day_of_month ?? null,
+            lead_days: body.lead_days ?? null,
+            deadline_days: body.deadline_days,
+            notify_email: body.notify_email,
+        })
+        if (configResult.error) {
+            return Response.json({ error: configResult.error }, { status: 400 })
+        }
+        const config = configResult.config
+
+        const { schedule: existing, error: scheduleError } = await getGroupSchedule(supabaseAdmin, group.id)
+        if (scheduleError) {
+            return Response.json({ error: scheduleError }, { status: 500 })
+        }
+
+        if (!existing) {
+            const cursor = computeFirstWindow(group, config, {
+                anchorEvent: await getLatestGroupEvent(supabaseAdmin, group.id),
+                today: todayDateString(),
+            })
+            const { data: created, error: createError } = await supabaseAdmin
+                .from('group_schedules')
+                .insert({
+                    group_id: group.id,
+                    ...config,
+                    ...cursor,
+                    pause_token: crypto.randomBytes(16).toString('hex'),
+                })
+                .select('*')
+                .single()
+
+            if (createError || !created) {
+                return Response.json({ error: 'Could not save automatic-poll settings.' }, { status: 500 })
+            }
+            return Response.json({ schedule: sanitizeSchedule(created) })
+        }
+
+        // Edits keep the planned window and recompute when its poll goes out
+        // under the new send settings; the pre-send notice re-arms.
+        const cursor = computeCursor(group, config, existing.next_window_start)
+        const { data: updated, error: updateError } = await supabaseAdmin
+            .from('group_schedules')
+            .update({
+                ...config,
+                ...cursor,
+                presend_notice_sent_for: null,
+                updated_at: new Date().toISOString(),
+            })
+            .eq('id', existing.id)
+            .select('*')
+            .single()
+
+        if (updateError || !updated) {
+            return Response.json({ error: 'Could not save automatic-poll settings.' }, { status: 500 })
+        }
+        return Response.json({ schedule: sanitizeSchedule(updated) })
+    }
+
+    if (body.action === 'pause_schedule' || body.action === 'resume_schedule') {
+        const { schedule, error: scheduleError } = await getGroupSchedule(supabaseAdmin, group.id)
+        if (scheduleError) {
+            return Response.json({ error: scheduleError }, { status: 500 })
+        }
+        if (!schedule) {
+            return Response.json({ error: 'Automatic polls are not set up for this group.' }, { status: 404 })
+        }
+
+        let updates
+        if (body.action === 'pause_schedule') {
+            updates = { paused_at: new Date().toISOString() }
+        } else {
+            // Resume re-anchors to the next FUTURE period — never catch-up
+            // fires a poll for a period missed while paused.
+            const configResult = validateScheduleConfig(group, schedule)
+            if (configResult.error) {
+                return Response.json({ error: `Can't resume: ${configResult.error}` }, { status: 400 })
+            }
+            updates = {
+                paused_at: null,
+                presend_notice_sent_for: null,
+                ...computeFirstWindow(group, configResult.config, {
+                    anchorEvent: await getLatestGroupEvent(supabaseAdmin, group.id),
+                    today: todayDateString(),
+                }),
+            }
+        }
+
+        const { data: updated, error: updateError } = await supabaseAdmin
+            .from('group_schedules')
+            .update({ ...updates, updated_at: new Date().toISOString() })
+            .eq('id', schedule.id)
+            .select('*')
+            .single()
+
+        if (updateError || !updated) {
+            return Response.json({ error: 'Could not update automatic polls.' }, { status: 500 })
+        }
+        return Response.json({ schedule: sanitizeSchedule(updated) })
     }
 
     if (body.action === 'add_member') {

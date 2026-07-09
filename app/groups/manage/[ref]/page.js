@@ -3,16 +3,16 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
+import { useSession } from 'next-auth/react'
 import { saveGroupToken } from '../../../../lib/savedGroupTokens'
+import {
+    CADENCE_CHOICES,
+    cadenceChoiceValue,
+    cadenceFromChoice,
+    maxDeadlineDays,
+} from '../../../../lib/schedule'
 
-const CADENCE_OPTIONS = [
-    { value: '', label: 'No set cadence' },
-    { value: '7', label: 'Weekly' },
-    { value: '14', label: 'Every 2 weeks' },
-    { value: '30', label: 'Monthly' },
-    { value: '60', label: 'Every 2 months' },
-    { value: '90', label: 'Quarterly' },
-]
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 function getToday() {
     const now = new Date()
@@ -38,13 +38,22 @@ function formatDate(dateStr) {
     })
 }
 
-// "Plan next hangout" prefill: title "<Group> — <Month Year>", range today →
-// today + min(cadence ?? 21, 30 days).
+// "Plan next hangout" prefill: title "<Group> — <Month Year>", range from
+// the cadence (day: one period from today; month: through end of next month;
+// no cadence: 21 days).
 function planNextHref(group, ref) {
     const today = getToday()
     const now = new Date()
     const title = `${group.name} — ${now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`
-    const end = addDays(today, Math.min(group.cadence_days ?? 21, 30))
+    let end
+    if (group.cadence_unit === 'month') {
+        const endOfNextMonth = new Date(now.getFullYear(), now.getMonth() + 2, 0)
+        const m = String(endOfNextMonth.getMonth() + 1).padStart(2, '0')
+        const d = String(endOfNextMonth.getDate()).padStart(2, '0')
+        end = `${endOfNextMonth.getFullYear()}-${m}-${d}`
+    } else {
+        end = addDays(today, Math.min(group.cadence_interval ?? 21, 30))
+    }
     const query = new URLSearchParams({
         group: ref,
         groupName: group.name,
@@ -58,6 +67,7 @@ function planNextHref(group, ref) {
 export default function GroupManagePage() {
     const params = useParams()
     const ref = params.ref
+    const { data: session } = useSession()
 
     const [bundle, setBundle] = useState(null)
     const [loading, setLoading] = useState(true)
@@ -78,6 +88,10 @@ export default function GroupManagePage() {
     const [removingMemberId, setRemovingMemberId] = useState(null)
 
     const [linkDrafts, setLinkDrafts] = useState({})
+
+    const [editingSchedule, setEditingSchedule] = useState(false)
+    const [schedDraft, setSchedDraft] = useState(null)
+    const [schedSaving, setSchedSaving] = useState(false)
 
     const fetchBundle = useCallback(async () => {
         try {
@@ -156,9 +170,43 @@ export default function GroupManagePage() {
         )
     }
 
-    const { group, members, events, nudge } = bundle
+    const { group, members, events, nudge, schedule } = bundle
     const countableEvents = events.filter((event) => event.countable)
     const planHref = planNextHref(group, ref)
+    const automationActive = Boolean(schedule && !schedule.paused_at)
+
+    const startEditSchedule = () => {
+        setSchedDraft({
+            excludedWeekdays: schedule?.excluded_weekdays || [],
+            sendDay: String(schedule?.send_day_of_month ?? 20),
+            leadDays: String(schedule?.lead_days ?? 7),
+            deadlineDays: String(schedule?.deadline_days ?? 5),
+            notifyEmail: schedule?.notify_email || session?.user?.email || '',
+        })
+        setEditingSchedule(true)
+    }
+
+    const toggleWeekday = (day) => {
+        setSchedDraft((prev) => ({
+            ...prev,
+            excludedWeekdays: prev.excludedWeekdays.includes(day)
+                ? prev.excludedWeekdays.filter((d) => d !== day)
+                : [...prev.excludedWeekdays, day],
+        }))
+    }
+
+    const saveSchedule = async () => {
+        setSchedSaving(true)
+        const ok = await post('update_schedule', {
+            excluded_weekdays: schedDraft.excludedWeekdays,
+            send_day_of_month: group.cadence_unit === 'month' ? Number(schedDraft.sendDay) : null,
+            lead_days: group.cadence_unit === 'day' ? Number(schedDraft.leadDays) : null,
+            deadline_days: Number(schedDraft.deadlineDays),
+            notify_email: schedDraft.notifyEmail,
+        })
+        setSchedSaving(false)
+        if (ok) setEditingSchedule(false)
+    }
 
     const startEditMember = (member) => {
         setEditingMemberId(member.id)
@@ -238,14 +286,34 @@ export default function GroupManagePage() {
                             <label style={{ color: '#94a3b8', fontSize: '0.85rem' }}>Cadence:</label>
                             <select
                                 className="input-field"
-                                value={String(group.cadence_days ?? '')}
-                                onChange={(e) => post('update_group', { cadence_days: e.target.value ? Number(e.target.value) : null })}
+                                value={cadenceChoiceValue(group)}
+                                onChange={(e) => post('update_group', {
+                                    cadence: cadenceFromChoice(e.target.value, group.cadence_anchor_day ?? 15),
+                                })}
                                 style={{ marginBottom: 0, maxWidth: '220px' }}
                             >
-                                {CADENCE_OPTIONS.map((option) => (
+                                <option value="">No set cadence</option>
+                                {CADENCE_CHOICES.map((option) => (
                                     <option key={option.value} value={option.value}>{option.label}</option>
                                 ))}
                             </select>
+                            {group.cadence_unit === 'month' && (
+                                <>
+                                    <label style={{ color: '#94a3b8', fontSize: '0.85rem' }}>around the</label>
+                                    <select
+                                        className="input-field"
+                                        value={String(group.cadence_anchor_day ?? 15)}
+                                        onChange={(e) => post('update_group', {
+                                            cadence: cadenceFromChoice(cadenceChoiceValue(group), Number(e.target.value)),
+                                        })}
+                                        style={{ marginBottom: 0, maxWidth: '90px' }}
+                                    >
+                                        {Array.from({ length: 31 }, (_, i) => i + 1).map((day) => (
+                                            <option key={day} value={String(day)}>{day}</option>
+                                        ))}
+                                    </select>
+                                </>
+                            )}
                         </div>
                     </div>
 
@@ -264,8 +332,19 @@ export default function GroupManagePage() {
                     </div>
                 </div>
 
-                {/* Cadence nudge */}
-                {nudge?.nudge && (
+                {/* Cadence nudge — replaced by the next-send line when
+                    automatic polls are on (the app plans it, not the host). */}
+                {automationActive ? (
+                    <div style={{
+                        background: '#312e81', border: '2px solid #6366f1', borderRadius: '12px',
+                        padding: '0.9rem 1rem', marginTop: '1rem',
+                    }}>
+                        <p style={{ color: '#c7d2fe' }}>
+                            📅 Next poll goes out automatically on <strong>{formatDate(schedule.next_send_on)}</strong>
+                            {' '}for {formatDate(schedule.next_window_start)} – {formatDate(schedule.next_window_end)}.
+                        </p>
+                    </div>
+                ) : nudge?.nudge && (
                     <div style={{
                         background: '#312e81', border: '2px solid #6366f1', borderRadius: '12px',
                         padding: '0.9rem 1rem', marginTop: '1rem',
@@ -287,6 +366,164 @@ export default function GroupManagePage() {
                         <p style={{ color: '#fca5a5' }}>{actionError}</p>
                     </div>
                 )}
+
+                {/* Automatic polls */}
+                <div className="section-card" style={{ marginTop: '1.25rem' }}>
+                    <h2 style={{ color: '#f8fafc', marginBottom: '0.25rem' }}>Automatic polls</h2>
+                    <p style={{ color: '#94a3b8', marginBottom: '0.9rem' }}>
+                        On your cadence, the app creates the next poll, emails members their personal links,
+                        and emails you when everyone has responded or the deadline passes.
+                    </p>
+
+                    {schedule?.last_error && (
+                        <p style={{ color: '#fbbf24', fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+                            ⚠️ Last run note: {schedule.last_error}
+                        </p>
+                    )}
+
+                    {!editingSchedule && !schedule && (
+                        <div>
+                            {group.cadence_unit ? (
+                                <button className="button-primary" onClick={startEditSchedule}>
+                                    Set up automatic polls
+                                </button>
+                            ) : (
+                                <p style={{ color: '#64748b', fontSize: '0.85rem' }}>
+                                    Set a cadence above to enable automatic polls.
+                                </p>
+                            )}
+                        </div>
+                    )}
+
+                    {!editingSchedule && schedule && (
+                        <div>
+                            <p style={{ color: '#cbd5e1', fontSize: '0.9rem' }}>
+                                {schedule.paused_at
+                                    ? '⏸️ Paused — no polls will be sent until you resume.'
+                                    : <>Next poll: <strong>{formatDate(schedule.next_send_on)}</strong> for {formatDate(schedule.next_window_start)} – {formatDate(schedule.next_window_end)}.</>}
+                            </p>
+                            <p style={{ color: '#64748b', fontSize: '0.82rem', marginTop: '0.35rem' }}>
+                                {schedule.excluded_weekdays.length > 0
+                                    ? `Excludes ${schedule.excluded_weekdays.map((d) => WEEKDAY_LABELS[d]).join(', ')}`
+                                    : 'All days offered'}
+                                {' · '}{schedule.deadline_days} day{schedule.deadline_days === 1 ? '' : 's'} to respond
+                                {' · '}notifies {schedule.notify_email}
+                            </p>
+                            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.75rem' }}>
+                                <button className="button-secondary" onClick={startEditSchedule}>Edit</button>
+                                <button
+                                    className="button-secondary"
+                                    onClick={() => post(schedule.paused_at ? 'resume_schedule' : 'pause_schedule')}
+                                >
+                                    {schedule.paused_at ? '▶ Resume' : '⏸ Pause'}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {editingSchedule && schedDraft && (
+                        <div>
+                            <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.35rem' }}>
+                                Days to leave out of every poll
+                            </label>
+                            <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.9rem' }}>
+                                {WEEKDAY_LABELS.map((label, day) => {
+                                    const excluded = schedDraft.excludedWeekdays.includes(day)
+                                    return (
+                                        <button
+                                            key={label}
+                                            onClick={() => toggleWeekday(day)}
+                                            style={{
+                                                background: excluded ? '#1e293b' : '#1e3a2f',
+                                                border: excluded ? '2px solid #475569' : '2px solid #10b981',
+                                                color: excluded ? '#94a3b8' : '#a7f3d0',
+                                                borderRadius: '999px',
+                                                padding: '0.3rem 0.7rem',
+                                                fontSize: '0.82rem',
+                                                cursor: 'pointer',
+                                            }}
+                                        >
+                                            {excluded ? '✗' : '✓'} {label}
+                                        </button>
+                                    )
+                                })}
+                            </div>
+
+                            {group.cadence_unit === 'month' ? (
+                                <>
+                                    <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
+                                        Send the poll on this day of the month before (1–27)
+                                    </label>
+                                    <select
+                                        className="input-field"
+                                        value={schedDraft.sendDay}
+                                        onChange={(e) => setSchedDraft((prev) => ({ ...prev, sendDay: e.target.value }))}
+                                        style={{ maxWidth: '120px' }}
+                                    >
+                                        {Array.from({ length: 27 }, (_, i) => i + 1).map((day) => (
+                                            <option key={day} value={String(day)}>{day}</option>
+                                        ))}
+                                    </select>
+                                </>
+                            ) : (
+                                <>
+                                    <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
+                                        Send the poll this many days before each period (2–60)
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min="2"
+                                        max="60"
+                                        className="input-field"
+                                        value={schedDraft.leadDays}
+                                        onChange={(e) => setSchedDraft((prev) => ({ ...prev, leadDays: e.target.value }))}
+                                        style={{ maxWidth: '120px' }}
+                                    />
+                                </>
+                            )}
+
+                            <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
+                                Days members get to respond
+                                {(() => {
+                                    const cap = maxDeadlineDays(group, {
+                                        sendDayOfMonth: Number(schedDraft.sendDay),
+                                        leadDays: Number(schedDraft.leadDays),
+                                    })
+                                    return cap ? ` (max ${cap} so the poll closes before the period starts)` : ''
+                                })()}
+                            </label>
+                            <input
+                                type="number"
+                                min="1"
+                                className="input-field"
+                                value={schedDraft.deadlineDays}
+                                onChange={(e) => setSchedDraft((prev) => ({ ...prev, deadlineDays: e.target.value }))}
+                                style={{ maxWidth: '120px' }}
+                            />
+
+                            <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
+                                Email you at *
+                            </label>
+                            <input
+                                type="email"
+                                className="input-field"
+                                placeholder="you@example.com"
+                                value={schedDraft.notifyEmail}
+                                onChange={(e) => setSchedDraft((prev) => ({ ...prev, notifyEmail: e.target.value }))}
+                                style={{ maxWidth: '320px' }}
+                            />
+
+                            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                <button className="button-primary" disabled={schedSaving} onClick={saveSchedule}>
+                                    {schedSaving ? 'Saving...' : 'Save automatic polls'}
+                                </button>
+                                <button className="button-secondary" onClick={() => setEditingSchedule(false)}>
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
 
                 {/* Roster */}
                 <div className="section-card" style={{ marginTop: '1.25rem' }}>
