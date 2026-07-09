@@ -147,7 +147,6 @@ export default function NewEventPage() {
                     show_availability_counts: showAvailabilityCounts,
                     allow_plus_one: allowPlusOne,
                     access_mode: accessMode,
-                    owner_email: null,
                     // Links link-mode events to the guest's device-wide
                     // participant (same key the respond page maintains).
                     participantToken: typeof window !== 'undefined'

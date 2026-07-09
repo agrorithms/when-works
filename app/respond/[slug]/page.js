@@ -71,7 +71,6 @@ export default function EventRespondPage() {
     const serverNameRef = useRef(null)
     const savedModeRef = useRef('available')
     const responseIdRef = useRef(null)
-    const responseTokenRef = useRef(null)
     const participantTokenRef = useRef(null)
     const saveTimeout = useRef(null)
     const nameTimeout = useRef(null)
@@ -102,7 +101,7 @@ export default function EventRespondPage() {
     // resolve (and get adopted server-side).
     const authTokens = useCallback(() => ({
         participantToken: participantTokenRef.current || readParticipantToken(),
-        responseToken: responseTokenRef.current || readStoredToken(slug),
+        responseToken: readStoredToken(slug),
     }), [slug])
 
     const storeParticipantToken = useCallback((token) => {
@@ -342,10 +341,9 @@ export default function EventRespondPage() {
 
         const { response: prev, created } = payload
 
-        // The per-slug localStorage key is no longer written — the
-        // device-wide participant token replaces it. response_token is kept
-        // in memory for this page load's saves.
-        responseTokenRef.current = prev.response_token
+        // The per-slug legacy response-token key is read (so old browsers
+        // resolve and get adopted) but never written — the device-wide
+        // participant token is the identity going forward.
         storeParticipantToken(prev.participant_token)
 
         setResponseId(prev.id)

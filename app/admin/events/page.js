@@ -10,25 +10,16 @@ export default function EventsListPage() {
     const adminPassword = admin?.adminPassword
     const [events, setEvents] = useState([])
     const [loading, setLoading] = useState(true)
-    const [unlinked, setUnlinked] = useState(null)
-    const [unlinkedOpen, setUnlinkedOpen] = useState(false)
 
     const fetchData = useCallback(async () => {
         try {
-            const [eventsRes, unlinkedRes] = await Promise.all([
-                fetch('/api/admin/events', {
-                    headers: { 'x-admin-password': adminPassword || '' },
-                }),
-                fetch('/api/admin/unlinked', {
-                    headers: { 'x-admin-password': adminPassword || '' },
-                }),
-            ])
+            const eventsRes = await fetch('/api/admin/events', {
+                headers: { 'x-admin-password': adminPassword || '' },
+            })
             const data = eventsRes.ok ? await eventsRes.json() : null
             setEvents(data?.events || [])
-            setUnlinked(unlinkedRes.ok ? await unlinkedRes.json() : null)
         } catch {
             setEvents([])
-            setUnlinked(null)
         }
         setLoading(false)
     }, [adminPassword])
@@ -158,83 +149,6 @@ export default function EventsListPage() {
                     )
                 })
             )}
-
-            {unlinked && (() => {
-                const unlinkedTotal =
-                    (unlinked.unlinkedOwnerships?.length || 0) +
-                    (unlinked.unlinkedEmailResponses?.length || 0)
-
-                return (
-                    <div style={{
-                        marginTop: '2rem', background: '#1e293b', borderRadius: '8px',
-                        border: '1px solid #334155', padding: '0.75rem 1rem'
-                    }}>
-                        <button
-                            onClick={() => setUnlinkedOpen(open => !open)}
-                            style={{
-                                background: 'none', border: 'none', color: '#94a3b8',
-                                cursor: 'pointer', fontSize: '0.85rem', padding: 0,
-                                display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%'
-                            }}
-                        >
-                            <span>{unlinkedOpen ? '▾' : '▸'}</span>
-                            <span>
-                                Unlinked identities ({unlinkedTotal})
-                                {unlinked.unclaimedGuestCount > 0 && (
-                                    <span style={{ color: '#64748b' }}>
-                                        {' '}· {unlinked.unclaimedGuestCount} unclaimed guest response{unlinked.unclaimedGuestCount !== 1 ? 's' : ''}
-                                    </span>
-                                )}
-                            </span>
-                        </button>
-
-                        {unlinkedOpen && (
-                            <div style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: '#94a3b8' }}>
-                                <p style={{ color: '#64748b', marginBottom: '0.75rem' }}>
-                                    Rows the participants backfill hasn&apos;t linked. Re-run 004 after deploys;
-                                    hand-check anything left here before running 005.
-                                </p>
-
-                                <h4 style={{ color: '#e2e8f0', marginBottom: '0.25rem' }}>
-                                    Ownerships ({unlinked.unlinkedOwnerships?.length || 0})
-                                </h4>
-                                {(unlinked.unlinkedOwnerships || []).length === 0 ? (
-                                    <p style={{ marginBottom: '0.75rem' }}>None 🎉</p>
-                                ) : (
-                                    <ul style={{ listStyle: 'none', marginBottom: '0.75rem' }}>
-                                        {unlinked.unlinkedOwnerships.map(row => (
-                                            <li key={row.id} style={{ padding: '0.25rem 0', borderBottom: '1px solid #334155' }}>
-                                                <span style={{ color: '#e2e8f0' }}>{row.event_title || row.event_id}</span>
-                                                {' — '}{row.access_mode}
-                                                {row.owner_email ? ` · ${row.owner_email}` : ''}
-                                                {!row.owner_email && row.owner_user_id ? ` · user_id ${row.owner_user_id}` : ''}
-                                                {!row.owner_email && !row.owner_user_id ? ' · link-only (fine)' : ''}
-                                            </li>
-                                        ))}
-                                    </ul>
-                                )}
-
-                                <h4 style={{ color: '#e2e8f0', marginBottom: '0.25rem' }}>
-                                    Responses with email ({unlinked.unlinkedEmailResponses?.length || 0})
-                                </h4>
-                                {(unlinked.unlinkedEmailResponses || []).length === 0 ? (
-                                    <p>None 🎉</p>
-                                ) : (
-                                    <ul style={{ listStyle: 'none' }}>
-                                        {unlinked.unlinkedEmailResponses.map(row => (
-                                            <li key={row.id} style={{ padding: '0.25rem 0', borderBottom: '1px solid #334155' }}>
-                                                <span style={{ color: '#e2e8f0' }}>{row.display_name}</span>
-                                                {' · '}{row.google_email}
-                                                {' — '}{row.event_title || row.event_id}
-                                            </li>
-                                        ))}
-                                    </ul>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                )
-            })()}
         </div>
     )
 }
