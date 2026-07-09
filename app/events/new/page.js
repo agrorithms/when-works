@@ -1,7 +1,8 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { useSession } from 'next-auth/react'
 import AdminCalendar from '../../../components/AdminCalendar'
 import { saveOwnerToken } from '../../../lib/savedOwnerTokens'
@@ -22,9 +23,14 @@ function getToday() {
     return `${y}-${m}-${d}`
 }
 
-export default function NewEventPage() {
+function NewEventPageInner() {
     const { status, data: session } = useSession()
     const signedIn = status === 'authenticated'
+    const searchParams = useSearchParams()
+    // Arriving from a group's "Plan next hangout": the created event gets
+    // linked to the group and members are emailed their personal links.
+    const groupRef = searchParams.get('group') || null
+    const groupName = searchParams.get('groupName') || null
 
     const [newTitle, setNewTitle] = useState('')
     const [newDescription, setNewDescription] = useState('')
@@ -39,11 +45,26 @@ export default function NewEventPage() {
     const [createLoading, setCreateLoading] = useState(false)
     const [created, setCreated] = useState(false)
     const [createdEvent, setCreatedEvent] = useState(null)
+    const [emailedCount, setEmailedCount] = useState(null)
 
     const today = getToday()
     const accessMode = signedIn ? 'google' : 'link'
 
     const titlePlaceholder = useMemo(() => 'e.g. Summer BBQ, Game Night...', [])
+
+    // Prefill from the group's "Plan next hangout" link (run once on mount).
+    useEffect(() => {
+        if (!groupRef) return
+        const prefillTitle = searchParams.get('title')
+        const prefillStart = searchParams.get('start')
+        const prefillEnd = searchParams.get('end')
+        if (prefillTitle) {
+            setNewTitle(prefillTitle)
+            setNewSlug(generateSlug(prefillTitle))
+        }
+        if (prefillStart && prefillStart >= today) setNewStartDate(prefillStart)
+        if (prefillEnd && prefillEnd >= (prefillStart || today)) setNewEndDate(prefillEnd)
+    }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
     const handleTitleChange = (value) => {
         setNewTitle(value)
@@ -152,6 +173,7 @@ export default function NewEventPage() {
                     participantToken: typeof window !== 'undefined'
                         ? localStorage.getItem('when_works_participant_token') || null
                         : null,
+                    ...(groupRef ? { groupRef } : {}),
                 }),
             })
 
@@ -163,6 +185,7 @@ export default function NewEventPage() {
             }
 
             setCreatedEvent(payload.event)
+            setEmailedCount(payload.emailedCount ?? null)
             setCreated(true)
         } catch {
             setCreateError('Something went wrong. Please try again.')
@@ -184,6 +207,12 @@ export default function NewEventPage() {
                 <h1>🎉</h1>
                 <h1 style={{ color: '#10b981' }}>Event Created!</h1>
                 <h2>&quot;{newTitle}&quot; is ready to share</h2>
+
+                {groupRef && emailedCount !== null && (
+                    <p style={{ color: '#a7f3d0', marginTop: '0.5rem' }}>
+                        📧 Emailed {emailedCount} group member{emailedCount !== 1 ? 's' : ''} their personal links
+                    </p>
+                )}
 
                 <div style={{ background: '#1e293b', borderRadius: '12px', padding: '1rem', margin: '1.5rem auto', maxWidth: '560px' }}>
                     <p style={{ color: '#94a3b8', fontSize: '0.8rem', marginBottom: '0.25rem' }}>Public invite link</p>
@@ -236,6 +265,14 @@ export default function NewEventPage() {
                 <div className="section-card" style={{ marginTop: '1rem' }}>
                     <h1>Create an event</h1>
                     <h2>Set up the event details and dates.</h2>
+
+                    {groupRef && (
+                        <div style={{ background: '#312e81', border: '2px solid #6366f1', borderRadius: '12px', padding: '1rem', marginBottom: '1rem' }}>
+                            <p style={{ color: '#c7d2fe' }}>
+                                👥 This event will be linked to <strong>{groupName || 'your group'}</strong> — members will be emailed their personal response links when you create it.
+                            </p>
+                        </div>
+                    )}
 
                     {signedIn ? (
                         <div style={{ background: '#111827', border: '1px solid #334155', borderRadius: '12px', padding: '1rem', marginBottom: '1rem' }}>
@@ -332,5 +369,18 @@ export default function NewEventPage() {
                 </div>
             </div>
         </div>
+    )
+}
+
+// useSearchParams needs a Suspense boundary for prerendering.
+export default function NewEventPage() {
+    return (
+        <Suspense fallback={(
+            <div className="container" style={{ textAlign: 'center', paddingTop: '4rem' }}>
+                <h2>Loading...</h2>
+            </div>
+        )}>
+            <NewEventPageInner />
+        </Suspense>
     )
 }

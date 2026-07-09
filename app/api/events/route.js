@@ -8,6 +8,8 @@ import {
     ensureParticipantForSession,
     getParticipantByToken,
 } from '../../../lib/participants'
+import { resolveGroupAccess } from '../../../lib/groups'
+import { sendGroupEventEmails } from '../../../lib/email'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -144,6 +146,19 @@ export async function POST(request) {
         participant = await getParticipantByToken(supabaseAdmin, body.participantToken)
     }
 
+    // Linking to a group requires proving group access — 403 aborts creation.
+    let group = null
+    if (body.groupRef) {
+        const groupResult = await resolveGroupAccess(supabaseAdmin, body.groupRef, session, request)
+        if (!groupResult.group) {
+            return Response.json(
+                { error: groupResult.error || 'Group not found.' },
+                { status: groupResult.status || 404 }
+            )
+        }
+        group = groupResult.group
+    }
+
     const { data: eventData, error: eventError } = await supabaseAdmin
         .from('events')
         .insert({
@@ -156,6 +171,9 @@ export async function POST(request) {
             blocked_dates: blockedDates,
             show_availability_counts: showAvailabilityCounts,
             allow_plus_one: allowPlusOne,
+            // Spread (not group_id: null) so ungrouped creation keeps working
+            // against a pre-006 schema during the deploy window.
+            ...(group ? { group_id: group.id } : {}),
         })
         .select()
         .single()
@@ -188,6 +206,25 @@ export async function POST(request) {
         )
     }
 
+    // Group notifications are best-effort: creation never fails because
+    // email did (lib/email.js no-ops without the RESEND env vars).
+    let emailedCount = null
+    if (group) {
+        const { data: memberRows } = await supabaseAdmin
+            .from('group_members')
+            .select('display_name, invited_email, member_token, removed_at')
+            .eq('group_id', group.id)
+            .is('removed_at', null)
+
+        const emailResult = await sendGroupEventEmails({
+            group,
+            event: eventData,
+            members: memberRows || [],
+            baseUrl: process.env.NEXTAUTH_URL || 'http://localhost:3000',
+        })
+        emailedCount = emailResult.emailedCount
+    }
+
     return Response.json({
         event: {
             ...eventData,
@@ -195,5 +232,6 @@ export async function POST(request) {
             publicLink: `/respond/${eventData.slug}`,
             manageLink: ownershipData.manage_token ? `/events/manage/${ownershipData.manage_token}` : `/events/manage/${eventData.id}`,
         },
+        ...(group ? { emailedCount } : {}),
     })
 }
