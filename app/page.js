@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import PendingGroupEvents from '../components/PendingGroupEvents'
 
 function HeroCard({ title, description, href, primary = false, onClick }) {
     const cardStyles = {
@@ -63,6 +64,7 @@ export default function HomePage() {
             }}
         >
             <div className="container" style={{ paddingTop: '3rem', paddingBottom: '3rem' }}>
+                <PendingGroupEvents />
                 <div>
                     <p style={{ color: '#94a3b8', letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: '0.75rem' }}>
                         When Works
