@@ -5,21 +5,12 @@ import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useSession } from 'next-auth/react'
 import { readGroupTokens, saveGroupToken } from '../../lib/savedGroupTokens'
+import { CADENCE_CHOICES, cadenceFromChoice, describeCadence } from '../../lib/schedule'
 
 const PARTICIPANT_TOKEN_KEY = 'when_works_participant_token'
 
-const CADENCE_OPTIONS = [
-    { value: '', label: 'No set cadence' },
-    { value: '7', label: 'Weekly' },
-    { value: '14', label: 'Every 2 weeks' },
-    { value: '30', label: 'Monthly' },
-    { value: '60', label: 'Every 2 months' },
-    { value: '90', label: 'Quarterly' },
-]
-
-function cadenceLabel(cadenceDays) {
-    const option = CADENCE_OPTIONS.find((item) => item.value === String(cadenceDays ?? ''))
-    return option ? option.label : `Every ${cadenceDays} days`
+function cadenceLabel(group) {
+    return describeCadence(group) || 'No set cadence'
 }
 
 function GroupCard({ group, subtitle }) {
@@ -29,7 +20,7 @@ function GroupCard({ group, subtitle }) {
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
                     <div>
                         <h3 style={{ marginBottom: '0.25rem' }}>👥 {group.name}</h3>
-                        <p style={{ color: '#94a3b8', fontSize: '0.85rem' }}>{cadenceLabel(group.cadence_days)}</p>
+                        <p style={{ color: '#94a3b8', fontSize: '0.85rem' }}>{cadenceLabel(group)}</p>
                         {subtitle && (
                             <p style={{ color: '#64748b', fontSize: '0.8rem', marginTop: '0.3rem' }}>{subtitle}</p>
                         )}
@@ -57,6 +48,7 @@ export default function GroupsPage() {
 
     const [newName, setNewName] = useState('')
     const [newCadence, setNewCadence] = useState('')
+    const [newAnchorDay, setNewAnchorDay] = useState('15')
     const [createLoading, setCreateLoading] = useState(false)
     const [createError, setCreateError] = useState('')
 
@@ -118,7 +110,7 @@ export default function GroupsPage() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     name: newName.trim(),
-                    cadence_days: newCadence ? Number(newCadence) : null,
+                    cadence: cadenceFromChoice(newCadence, Number(newAnchorDay)),
                     access_mode: signedIn ? 'google' : 'link',
                     participantToken: typeof window !== 'undefined'
                         ? localStorage.getItem(PARTICIPANT_TOKEN_KEY) || null
@@ -203,10 +195,28 @@ export default function GroupsPage() {
                         value={newCadence}
                         onChange={(e) => setNewCadence(e.target.value)}
                     >
-                        {CADENCE_OPTIONS.map((option) => (
+                        <option value="">No set cadence</option>
+                        {CADENCE_CHOICES.map((option) => (
                             <option key={option.value} value={option.value}>{option.label}</option>
                         ))}
                     </select>
+
+                    {newCadence.startsWith('month') && (
+                        <>
+                            <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
+                                Around which day of the month?
+                            </label>
+                            <select
+                                className="input-field"
+                                value={newAnchorDay}
+                                onChange={(e) => setNewAnchorDay(e.target.value)}
+                            >
+                                {Array.from({ length: 31 }, (_, i) => i + 1).map((day) => (
+                                    <option key={day} value={String(day)}>{day}</option>
+                                ))}
+                            </select>
+                        </>
+                    )}
 
                     {createError && (
                         <p style={{ color: '#fca5a5', marginBottom: '0.75rem' }}>{createError}</p>

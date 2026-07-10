@@ -8,11 +8,10 @@ import {
     getParticipantByToken,
 } from '../../../lib/participants'
 import { sanitizeGroup } from '../../../lib/groups'
+import { validateCadence } from '../../../lib/schedule'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
-
-const CADENCE_PRESETS = [7, 14, 30, 60, 90]
 
 function makeManageToken() {
     return crypto.randomBytes(16).toString('hex')
@@ -103,7 +102,6 @@ export async function POST(request) {
 
     const name = (body.name || '').trim().slice(0, 80)
     const accessMode = body.access_mode
-    const cadenceDays = body.cadence_days == null ? null : Number(body.cadence_days)
 
     if (!name || !accessMode) {
         return Response.json({ error: 'Missing required fields.' }, { status: 400 })
@@ -113,9 +111,11 @@ export async function POST(request) {
         return Response.json({ error: 'Invalid access mode.' }, { status: 400 })
     }
 
-    if (cadenceDays !== null && !CADENCE_PRESETS.includes(cadenceDays)) {
-        return Response.json({ error: 'Invalid cadence.' }, { status: 400 })
+    const cadenceResult = validateCadence(body.cadence ?? null)
+    if (cadenceResult.error) {
+        return Response.json({ error: cadenceResult.error }, { status: 400 })
     }
+    const cadence = cadenceResult.cadence
 
     if (accessMode === 'google' && !session?.user?.email) {
         return Response.json({ error: 'Please sign in with Google to create a group this way.' }, { status: 401 })
@@ -132,7 +132,9 @@ export async function POST(request) {
         .from('groups')
         .insert({
             name,
-            cadence_days: cadenceDays,
+            cadence_unit: cadence?.unit ?? null,
+            cadence_interval: cadence?.interval ?? null,
+            cadence_anchor_day: cadence?.anchor_day ?? null,
             access_mode: accessMode,
             owner_participant_id: participant?.id ?? null,
             manage_token: accessMode === 'link' ? makeManageToken() : null,

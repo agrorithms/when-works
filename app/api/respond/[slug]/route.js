@@ -9,6 +9,7 @@ import {
     createGuestParticipant,
     claimResponseForParticipant,
 } from '../../../../lib/participants'
+import { maybeSendAllRespondedSummary } from '../../../../lib/ownerNotifications'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -512,6 +513,30 @@ export async function POST(request, context) {
 
         if (updateError || !updated) {
             return Response.json({ error: 'Could not save your response.' }, { status: 500 })
+        }
+
+        // Group polls: when every active member has a confirmed response,
+        // email the owner one summary. group_id / owner_summary_sent_at come
+        // from a separate query — PUBLIC_EVENT_FIELDS feeds public payloads
+        // and must not widen. Best-effort: never fails the save.
+        if (updated.confirmed && ('confirmed' in updates || 'dates' in updates)) {
+            try {
+                const { data: eventRow } = await supabaseAdmin
+                    .from('events')
+                    .select('id, title, group_id, owner_summary_sent_at')
+                    .eq('id', event.id)
+                    .maybeSingle()
+
+                if (eventRow?.group_id && !eventRow.owner_summary_sent_at) {
+                    await maybeSendAllRespondedSummary(
+                        supabaseAdmin,
+                        eventRow,
+                        process.env.NEXTAUTH_URL || 'http://localhost:3000'
+                    )
+                }
+            } catch (notifyError) {
+                console.error('[respond] all-responded summary failed:', notifyError)
+            }
         }
 
         return Response.json({ response: sanitizeOwnResponse(updated, claimed.participantToken) })
