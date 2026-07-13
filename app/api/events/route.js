@@ -8,13 +8,12 @@ import {
     ensureParticipantForSession,
     getParticipantByToken,
 } from '../../../lib/participants'
+import { resolveGroupAccess, sanitizeSchedule, todayDateString } from '../../../lib/groups'
+import { createEventCore } from '../../../lib/eventCreation'
+import { validateScheduleConfig, computeFirstWindow } from '../../../lib/schedule'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
-
-function makeManageToken() {
-    return crypto.randomBytes(16).toString('hex')
-}
 
 async function getOwnedEventsForSession(session) {
     const supabaseAdmin = getSupabaseAdmin()
@@ -144,48 +143,88 @@ export async function POST(request) {
         participant = await getParticipantByToken(supabaseAdmin, body.participantToken)
     }
 
-    const { data: eventData, error: eventError } = await supabaseAdmin
-        .from('events')
-        .insert({
-            title,
-            description,
-            slug,
-            date_range_start: dateRangeStart,
-            date_range_end: dateRangeEnd,
-            response_deadline: responseDeadline,
-            blocked_dates: blockedDates,
-            show_availability_counts: showAvailabilityCounts,
-            allow_plus_one: allowPlusOne,
+    // Linking to a group requires proving group access — 403 aborts creation.
+    let group = null
+    if (body.groupRef) {
+        const groupResult = await resolveGroupAccess(supabaseAdmin, body.groupRef, session, request)
+        if (!groupResult.group) {
+            return Response.json(
+                { error: groupResult.error || 'Group not found.' },
+                { status: groupResult.status || 404 }
+            )
+        }
+        group = groupResult.group
+    }
+
+    // Automation config is validated BEFORE the event insert so a bad
+    // schedule payload fails clean (no orphaned event).
+    let scheduleConfig = null
+    if (group && body.schedule) {
+        const configResult = validateScheduleConfig(group, {
+            excluded_weekdays: body.schedule.excluded_weekdays,
+            send_day_of_month: body.schedule.send_day_of_month ?? null,
+            lead_days: body.schedule.lead_days ?? null,
+            deadline_days: body.schedule.deadline_days,
+            notify_email: body.schedule.notify_email,
         })
-        .select()
-        .single()
-
-    if (eventError) {
-        return Response.json(
-            { error: eventError.code === '23505' ? 'That URL slug is already taken.' : eventError.message },
-            { status: 400 }
-        )
+        if (configResult.error) {
+            return Response.json({ error: configResult.error }, { status: 400 })
+        }
+        scheduleConfig = configResult.config
     }
 
-    const ownershipPayload = {
-        event_id: eventData.id,
-        access_mode: accessMode,
-        participant_id: participant?.id ?? null,
-        manage_token: accessMode === 'link' ? makeManageToken() : null,
+    const created = await createEventCore(supabaseAdmin, {
+        title,
+        description,
+        slug,
+        dateRangeStart,
+        dateRangeEnd,
+        responseDeadline,
+        blockedDates,
+        showAvailabilityCounts,
+        allowPlusOne,
+        accessMode,
+        ownerParticipantId: participant?.id ?? null,
+        group,
+    })
+
+    if (created.error) {
+        return Response.json({ error: created.error }, { status: created.status || 500 })
     }
 
-    const { data: ownershipData, error: ownershipError } = await supabaseAdmin
-        .from('event_ownerships')
-        .insert(ownershipPayload)
-        .select()
-        .single()
+    const { event: eventData, ownership: ownershipData, emailedCount } = created
 
-    if (ownershipError) {
-        await supabaseAdmin.from('events').delete().eq('id', eventData.id)
-        return Response.json(
-            { error: ownershipError.message || 'Failed to save event ownership.' },
-            { status: 500 }
-        )
+    // The event just created anchors the schedule: it covers the current
+    // period, so the first auto poll targets the following one.
+    let schedule = null
+    let scheduleError = null
+    if (scheduleConfig) {
+        const cursor = computeFirstWindow(group, scheduleConfig, {
+            anchorEvent: eventData,
+            today: todayDateString(),
+        })
+        const { data: scheduleRow, error: upsertError } = await supabaseAdmin
+            .from('group_schedules')
+            .upsert(
+                {
+                    group_id: group.id,
+                    ...scheduleConfig,
+                    ...cursor,
+                    pause_token: crypto.randomBytes(16).toString('hex'),
+                    paused_at: null,
+                    presend_notice_sent_for: null,
+                    updated_at: new Date().toISOString(),
+                },
+                { onConflict: 'group_id' }
+            )
+            .select('*')
+            .single()
+
+        if (upsertError || !scheduleRow) {
+            scheduleError = 'The event was created, but automatic polls could not be saved.'
+        } else {
+            schedule = sanitizeSchedule(scheduleRow)
+        }
     }
 
     return Response.json({
@@ -195,5 +234,8 @@ export async function POST(request) {
             publicLink: `/respond/${eventData.slug}`,
             manageLink: ownershipData.manage_token ? `/events/manage/${ownershipData.manage_token}` : `/events/manage/${eventData.id}`,
         },
+        ...(group ? { emailedCount } : {}),
+        ...(schedule ? { schedule } : {}),
+        ...(scheduleError ? { scheduleError } : {}),
     })
 }

@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSession } from 'next-auth/react'
+import PendingGroupEvents from '../../components/PendingGroupEvents'
 
 const SAVED_INVITES_KEY = 'when_works_saved_invites'
 const SAVED_OWNER_TOKENS_KEY = 'when_works_saved_owner_tokens'
@@ -183,6 +184,7 @@ export default function EventsDashboardPage() {
             }}
         >
             <div className="container" style={{ paddingTop: '2rem', paddingBottom: '3rem' }}>
+                <PendingGroupEvents />
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
                     <div>
                         <Link href="/" className="nav-link">

@@ -9,6 +9,7 @@ import {
     createGuestParticipant,
     claimResponseForParticipant,
 } from '../../../../lib/participants'
+import { maybeSendAllRespondedSummary } from '../../../../lib/ownerNotifications'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -88,24 +89,66 @@ async function getActiveResponseByParticipant(supabaseAdmin, eventId, participan
     return data && data.length > 0 ? data[0] : null
 }
 
+// The per-member group invite link carries a member_token (?m= on the respond
+// page). It resolves to the roster row + its participant so the visitor lands
+// pre-identified. The join exposes the participant's email only to decide
+// placeholder-vs-real; it never leaves the server.
+async function getActiveMemberByToken(supabaseAdmin, token) {
+    if (typeof token !== 'string' || !UUID_PATTERN.test(token)) return null
+
+    const { data } = await supabaseAdmin
+        .from('group_members')
+        .select('id, group_id, participant_id, display_name, participants(participant_token, email)')
+        .eq('member_token', token)
+        .is('removed_at', null)
+        .limit(1)
+
+    return data && data.length > 0 ? data[0] : null
+}
+
+// When a signed-in person arrives via a member link whose roster entry is an
+// email-less placeholder, repoint the roster at the real participant. Members
+// added WITH an email are never auto-repointed (the host fixes those
+// deliberately). Best-effort: a unique-index hit (they're already a member of
+// the group) is silently ignored.
+async function maybeAdoptMemberRow(supabaseAdmin, member, participant) {
+    if (!member || !participant) return
+    if (member.participant_id === participant.id) return
+    if (member.participants?.email) return
+
+    await supabaseAdmin
+        .from('group_members')
+        .update({ participant_id: participant.id })
+        .eq('id', member.id)
+        .is('removed_at', null)
+}
+
 // Finds the respondent's own ACTIVE row. Signed-in identity always wins over
-// device tokens (shared computers), then the device-wide participant_token,
-// then the legacy per-event response_token.
+// tokens (shared computers), then the group member link's member_token (it
+// carries explicit identity, so it beats the ambient device token — the point
+// is landing pre-identified on a borrowed device), then the device-wide
+// participant_token, then the legacy per-event response_token.
 async function resolveRespondent(supabaseAdmin, eventId, session, body) {
     const sessionParticipant = session?.user?.email
         ? await getParticipantByEmail(supabaseAdmin, session.user.email)
         : null
+    const member = await getActiveMemberByToken(supabaseAdmin, body.memberToken)
 
     if (sessionParticipant) {
         const response = await getActiveResponseByParticipant(supabaseAdmin, eventId, sessionParticipant.id)
-        if (response) return { response, via: 'session', sessionParticipant, deviceParticipant: null }
+        if (response) return { response, via: 'session', sessionParticipant, deviceParticipant: null, member }
+    }
+
+    if (member) {
+        const response = await getActiveResponseByParticipant(supabaseAdmin, eventId, member.participant_id)
+        if (response) return { response, via: 'member_token', sessionParticipant, deviceParticipant: null, member }
     }
 
     const deviceParticipant = await getParticipantByToken(supabaseAdmin, body.participantToken)
 
     if (deviceParticipant) {
         const response = await getActiveResponseByParticipant(supabaseAdmin, eventId, deviceParticipant.id)
-        if (response) return { response, via: 'participant_token', sessionParticipant, deviceParticipant }
+        if (response) return { response, via: 'participant_token', sessionParticipant, deviceParticipant, member }
     }
 
     if (typeof body.responseToken === 'string' && UUID_PATTERN.test(body.responseToken)) {
@@ -118,11 +161,11 @@ async function resolveRespondent(supabaseAdmin, eventId, session, body) {
             .limit(1)
 
         if (data && data.length > 0) {
-            return { response: data[0], via: 'response_token', sessionParticipant, deviceParticipant }
+            return { response: data[0], via: 'response_token', sessionParticipant, deviceParticipant, member }
         }
     }
 
-    return { response: null, via: null, sessionParticipant, deviceParticipant }
+    return { response: null, via: null, sessionParticipant, deviceParticipant, member }
 }
 
 // Claim rules, applied after resolution:
@@ -136,12 +179,13 @@ async function resolveRespondent(supabaseAdmin, eventId, session, body) {
 // Returns { response, participantToken } — the token the browser should
 // store as its device-wide identity.
 async function applyClaims(supabaseAdmin, resolved, session, { allowCreate = false } = {}) {
-    const { via, sessionParticipant, deviceParticipant } = resolved
+    const { via, sessionParticipant, deviceParticipant, member } = resolved
     let response = resolved.response
 
     if (!response) return { response: null, participantToken: null }
 
     if (via === 'session') {
+        await maybeAdoptMemberRow(supabaseAdmin, member, sessionParticipant)
         return { response, participantToken: sessionParticipant.participant_token }
     }
 
@@ -154,10 +198,17 @@ async function applyClaims(supabaseAdmin, resolved, session, { allowCreate = fal
         }
 
         if (emailParticipant) {
+            await maybeAdoptMemberRow(supabaseAdmin, member, emailParticipant)
             return { response, participantToken: emailParticipant.participant_token }
         }
         // No participant yet (fire-and-forget signIn upsert failed and this
         // isn't `start`): fall through to the token identities below.
+    }
+
+    // Guest via member link: hand back the member participant's token so the
+    // device adopts the member identity — the placeholder merge for guests.
+    if (via === 'member_token') {
+        return { response, participantToken: member.participants?.participant_token || null }
     }
 
     if (via === 'participant_token') {
@@ -321,15 +372,28 @@ export async function POST(request, context) {
 
         // Returning-visitor probe (page load): report "nothing here" instead
         // of creating a row — otherwise every guest with a device-wide token
-        // would mint an empty response just by viewing an event.
+        // would mint an empty response just by viewing an event. A valid
+        // member link still identifies the visitor so the page can prefill
+        // their name (member_token itself is never echoed back).
         if (body.resolveOnly) {
-            return Response.json({ response: null, created: false })
+            return Response.json({
+                response: null,
+                created: false,
+                ...(resolved.member ? { member: { display_name: resolved.member.display_name } } : {}),
+            })
         }
 
-        // No existing row: pin down who this response will belong to.
+        // No existing row: pin down who this response will belong to. A guest
+        // arriving via a member link responds AS that member's participant.
         let participant = null
         if (session?.user?.email) {
             participant = resolved.sessionParticipant || await ensureParticipantForSession(supabaseAdmin, session)
+            await maybeAdoptMemberRow(supabaseAdmin, resolved.member, participant)
+        } else if (resolved.member) {
+            participant = {
+                id: resolved.member.participant_id,
+                participant_token: resolved.member.participants?.participant_token || null,
+            }
         } else {
             participant = resolved.deviceParticipant || await createGuestParticipant(supabaseAdmin)
         }
@@ -338,11 +402,15 @@ export async function POST(request, context) {
             ? body.name.trim().slice(0, MAX_NAME_LENGTH)
             : ''
 
-        let displayName = trimmedName
+        // Member links seed the roster name instead of "Guest #N".
+        const seedName = trimmedName
+            || (resolved.member?.display_name || '').trim().slice(0, MAX_NAME_LENGTH)
+
+        let displayName = seedName
         let internalName = null
 
-        if (trimmedName) {
-            displayName = await dedupeDisplayName(supabaseAdmin, event.id, trimmedName)
+        if (seedName) {
+            displayName = await dedupeDisplayName(supabaseAdmin, event.id, seedName)
             internalName = displayName.toLowerCase()
         } else {
             const guestNumber = await getNextGuestNumber(supabaseAdmin, event.id)
@@ -445,6 +513,30 @@ export async function POST(request, context) {
 
         if (updateError || !updated) {
             return Response.json({ error: 'Could not save your response.' }, { status: 500 })
+        }
+
+        // Group polls: when every active member has a confirmed response,
+        // email the owner one summary. group_id / owner_summary_sent_at come
+        // from a separate query — PUBLIC_EVENT_FIELDS feeds public payloads
+        // and must not widen. Best-effort: never fails the save.
+        if (updated.confirmed && ('confirmed' in updates || 'dates' in updates)) {
+            try {
+                const { data: eventRow } = await supabaseAdmin
+                    .from('events')
+                    .select('id, title, group_id, owner_summary_sent_at')
+                    .eq('id', event.id)
+                    .maybeSingle()
+
+                if (eventRow?.group_id && !eventRow.owner_summary_sent_at) {
+                    await maybeSendAllRespondedSummary(
+                        supabaseAdmin,
+                        eventRow,
+                        process.env.NEXTAUTH_URL || 'http://localhost:3000'
+                    )
+                }
+            } catch (notifyError) {
+                console.error('[respond] all-responded summary failed:', notifyError)
+            }
         }
 
         return Response.json({ response: sanitizeOwnResponse(updated, claimed.participantToken) })

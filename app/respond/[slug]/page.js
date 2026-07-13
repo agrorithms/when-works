@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams } from 'next/navigation'
+import { useState, useEffect, useRef, useCallback, Suspense } from 'react'
+import { useParams, useSearchParams } from 'next/navigation'
 import { useSession } from 'next-auth/react'
 import Calendar from '../../../components/Calendar'
 import Link from 'next/link'
@@ -36,9 +36,14 @@ function readParticipantToken() {
     return localStorage.getItem(PARTICIPANT_TOKEN_KEY) || null
 }
 
-export default function EventRespondPage() {
+function EventRespondPageInner() {
     const params = useParams()
     const slug = params.slug
+    const searchParams = useSearchParams()
+    // Group member link: ?m= carries the visitor's member_token so they land
+    // pre-identified. Sent in request bodies only; never persisted client-side
+    // (the server hands back the member's participant_token to adopt instead).
+    const memberToken = searchParams.get('m') || null
     const { data: session } = useSession()
 
     const [event, setEvent] = useState(null)
@@ -102,7 +107,8 @@ export default function EventRespondPage() {
     const authTokens = useCallback(() => ({
         participantToken: participantTokenRef.current || readParticipantToken(),
         responseToken: readStoredToken(slug),
-    }), [slug])
+        ...(memberToken ? { memberToken } : {}),
+    }), [slug, memberToken])
 
     const storeParticipantToken = useCallback((token) => {
         if (!token) return
@@ -334,7 +340,12 @@ export default function EventRespondPage() {
         }
 
         // resolveOnly probe found nothing — stay idle until the user acts.
+        // A member link still identifies the visitor: prefill their roster
+        // name unless they've already typed something.
         if (!payload.response) {
+            if (payload.member?.display_name && !nameRef.current.trim()) {
+                setName(payload.member.display_name)
+            }
             sessionStarting.current = false
             return
         }
@@ -362,6 +373,11 @@ export default function EventRespondPage() {
             setName(prev.display_name)
         } else if (created && trimmedName && prev.display_name !== trimmedName) {
             // The typed name was taken and the server suffixed it
+            serverNameRef.current = prev.display_name
+            setName(prev.display_name)
+        } else if (created && !trimmedName && prev.name && !prev.name.startsWith('guest_')) {
+            // No typed name but the server seeded one (group member link) —
+            // show it so the responder knows who they appear as.
             serverNameRef.current = prev.display_name
             setName(prev.display_name)
         }
@@ -456,16 +472,16 @@ export default function EventRespondPage() {
                 startSession(resolvedSignedInName)
                 return
             }
-            // Guest revisit: resolve an existing response (via the
-            // device-wide participant token or a legacy per-slug token) but
-            // never create one on page view.
-            if (readStoredToken(slug) || readParticipantToken()) {
+            // Guest revisit: resolve an existing response (via a member link,
+            // the device-wide participant token, or a legacy per-slug token)
+            // but never create one on page view.
+            if (memberToken || readStoredToken(slug) || readParticipantToken()) {
                 startSession(null, { resolveOnly: true })
             }
         }, 0)
 
         return () => clearTimeout(timeoutId)
-    }, [event, sessionStarted, slug, startSession, profileLoaded, session?.user?.email, resolvedSignedInName])
+    }, [event, sessionStarted, slug, startSession, profileLoaded, session?.user?.email, resolvedSignedInName, memberToken])
 
     const handleModeChange = () => {
         const newMode = mode === 'available' ? 'unavailable' : 'available'
@@ -1071,5 +1087,18 @@ export default function EventRespondPage() {
                 }
             </p>
         </div>
+    )
+}
+
+// useSearchParams needs a Suspense boundary for prerendering.
+export default function EventRespondPage() {
+    return (
+        <Suspense fallback={(
+            <div className="container" style={{ textAlign: 'center', paddingTop: '4rem' }}>
+                <h2>Loading event...</h2>
+            </div>
+        )}>
+            <EventRespondPageInner />
+        </Suspense>
     )
 }
