@@ -9,7 +9,11 @@ import {
     CADENCE_CHOICES,
     cadenceChoiceValue,
     cadenceFromChoice,
+    computeDeadline,
+    formatWindowLabel,
+    maxDate,
     maxDeadlineDays,
+    previewOccurrences,
 } from '../../../../lib/schedule'
 
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -36,6 +40,128 @@ function formatDate(dateStr) {
         day: 'numeric',
         year: 'numeric',
     })
+}
+
+function formatDateWithWeekday(dateStr) {
+    if (!dateStr) return ''
+    return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US', {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+    })
+}
+
+function weekdayName(dateStr) {
+    return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long' })
+}
+
+// Live preview of what the schedule draft will do — the same date math the
+// save route and cron run, so what's shown is what happens. Returns
+// { invalid } for incomplete drafts, { warning } when the response window
+// won't fit (mirrors the server rejection), else { occurrences: [next, then] }.
+function buildSchedulePreview(group, schedDraft, schedule, anchorEvent, today) {
+    const isMonth = group.cadence_unit === 'month'
+    const deadlineDays = Number(schedDraft.deadlineDays)
+    const sendDay = Number(schedDraft.sendDay)
+    const leadDays = Number(schedDraft.leadDays)
+
+    if (!Number.isInteger(deadlineDays) || deadlineDays < 1) return { invalid: true }
+    if (isMonth && (!Number.isInteger(sendDay) || sendDay < 1 || sendDay > 27)) return { invalid: true }
+    if (!isMonth && (!Number.isInteger(leadDays) || leadDays < 2 || leadDays > 60)) return { invalid: true }
+
+    const cap = maxDeadlineDays(group, { sendDayOfMonth: sendDay, leadDays })
+    if (deadlineDays > cap) {
+        const days = `${cap} day${cap === 1 ? '' : 's'}`
+        return {
+            warning: isMonth
+                ? `With a send day of the ${sendDay}, members can get at most ${days} to respond — otherwise the poll would close after the month starts.`
+                : `With polls going out ${leadDays} days ahead, members can get at most ${days} to respond — otherwise the poll would close after the period starts.`,
+        }
+    }
+
+    return {
+        occurrences: previewOccurrences(group, {
+            send_day_of_month: isMonth ? sendDay : null,
+            lead_days: isMonth ? null : leadDays,
+            deadline_days: deadlineDays,
+        }, { schedule, anchorEvent, today }),
+    }
+}
+
+function TimelineCell({ icon, date, label }) {
+    return (
+        <div style={{ textAlign: 'center' }}>
+            <div style={{ color: '#e2e8f0', fontSize: '0.88rem', whiteSpace: 'nowrap' }}>{icon} {date}</div>
+            <div style={{ color: '#64748b', fontSize: '0.75rem' }}>{label}</div>
+        </div>
+    )
+}
+
+function TimelineConnector() {
+    return <div style={{ flex: '1 1 20px', minWidth: '14px', borderTop: '1px dashed #475569' }} />
+}
+
+function SchedulePreview({ group, preview }) {
+    if (preview.invalid) {
+        return (
+            <p style={{ color: '#64748b', fontSize: '0.85rem', marginBottom: '1rem' }}>
+                Enter valid values above to preview the schedule.
+            </p>
+        )
+    }
+
+    if (preview.warning) {
+        return (
+            <p style={{ color: '#fbbf24', fontSize: '0.85rem', marginBottom: '1rem' }}>
+                ⚠️ {preview.warning}
+            </p>
+        )
+    }
+
+    const [next, then] = preview.occurrences
+    const isMonth = group.cadence_unit === 'month'
+    const sentWeekday = weekdayName(then.sendOn)
+    const dueWeekday = weekdayName(then.deadlineOn)
+    const windowLabel = formatWindowLabel(group, next.windowStart, next.windowEnd)
+
+    return (
+        <div style={{
+            background: '#0f172a', border: '1px solid #334155', borderRadius: '12px',
+            padding: '0.9rem 1rem', marginBottom: '1rem',
+        }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                <TimelineCell
+                    icon="📤"
+                    date={next.isCatchUp ? 'As soon as you save' : formatDateWithWeekday(next.effectiveSendOn)}
+                    label="poll sent"
+                />
+                <TimelineConnector />
+                <TimelineCell icon="⏰" date={formatDateWithWeekday(next.deadlineOn)} label="responses due" />
+                <TimelineConnector />
+                <TimelineCell icon="📅" date={isMonth ? `covers ${windowLabel}` : windowLabel} label="poll window" />
+            </div>
+
+            {isMonth ? (
+                <p style={{ color: '#64748b', fontSize: '0.82rem', marginTop: '0.6rem' }}>
+                    Then: sent {formatDateWithWeekday(then.sendOn)} · due {formatDateWithWeekday(then.deadlineOn)}
+                    {' '}→ covers {formatWindowLabel(group, then.windowStart, then.windowEnd)}
+                </p>
+            ) : (
+                <p style={{ color: '#94a3b8', fontSize: '0.82rem', marginTop: '0.6rem' }}>
+                    Repeats {group.cadence_interval === 7 ? 'every week' : 'every 2 weeks'} — sent{' '}
+                    <strong style={{ color: '#c7d2fe' }}>{sentWeekday}s</strong>, responses due{' '}
+                    <strong style={{ color: '#c7d2fe' }}>{dueWeekday}s</strong>.
+                </p>
+            )}
+
+            {next.isCatchUp && (
+                <p style={{ color: '#94a3b8', fontSize: '0.82rem', marginTop: '0.4rem' }}>
+                    The first poll goes out at the next daily run
+                    {isMonth ? '.' : <>; after that, polls are sent every <strong style={{ color: '#c7d2fe' }}>{sentWeekday}</strong>.</>}
+                </p>
+            )}
+        </div>
+    )
 }
 
 // "Plan next hangout" prefill: title "<Group> — <Month Year>", range from
@@ -174,6 +300,15 @@ export default function GroupManagePage() {
     const countableEvents = events.filter((event) => event.countable)
     const planHref = planNextHref(group, ref)
     const automationActive = Boolean(schedule && !schedule.paused_at)
+    const today = getToday()
+    // events[0] is the newest by created_at — the same anchor the save route
+    // uses when creating a schedule, so the preview matches it exactly.
+    const schedPreview = editingSchedule && schedDraft
+        ? buildSchedulePreview(group, schedDraft, schedule, events[0] ?? null, today)
+        : null
+    const nextDeadlineOn = automationActive
+        ? computeDeadline(maxDate(schedule.next_send_on, today), schedule.deadline_days, schedule.next_window_start)
+        : null
 
     const startEditSchedule = () => {
         setSchedDraft({
@@ -341,6 +476,7 @@ export default function GroupManagePage() {
                     }}>
                         <p style={{ color: '#c7d2fe' }}>
                             📅 Next poll goes out automatically on <strong>{formatDate(schedule.next_send_on)}</strong>
+                            {' '}(responses due <strong>{formatDate(nextDeadlineOn)}</strong>)
                             {' '}for {formatDate(schedule.next_window_start)} – {formatDate(schedule.next_window_end)}.
                         </p>
                     </div>
@@ -400,7 +536,7 @@ export default function GroupManagePage() {
                             <p style={{ color: '#cbd5e1', fontSize: '0.9rem' }}>
                                 {schedule.paused_at
                                     ? '⏸️ Paused — no polls will be sent until you resume.'
-                                    : <>Next poll: <strong>{formatDate(schedule.next_send_on)}</strong> for {formatDate(schedule.next_window_start)} – {formatDate(schedule.next_window_end)}.</>}
+                                    : <>Next poll: <strong>{formatDate(schedule.next_send_on)}</strong> · responses due <strong>{formatDate(nextDeadlineOn)}</strong> · for {formatDate(schedule.next_window_start)} – {formatDate(schedule.next_window_end)}.</>}
                             </p>
                             <p style={{ color: '#64748b', fontSize: '0.82rem', marginTop: '0.35rem' }}>
                                 {schedule.excluded_weekdays.length > 0
@@ -458,27 +594,38 @@ export default function GroupManagePage() {
                                         className="input-field"
                                         value={schedDraft.sendDay}
                                         onChange={(e) => setSchedDraft((prev) => ({ ...prev, sendDay: e.target.value }))}
-                                        style={{ maxWidth: '120px' }}
+                                        style={{ maxWidth: '120px', marginBottom: '0.35rem' }}
                                     >
                                         {Array.from({ length: 27 }, (_, i) => i + 1).map((day) => (
                                             <option key={day} value={String(day)}>{day}</option>
                                         ))}
                                     </select>
+                                    <p style={{ color: '#64748b', fontSize: '0.78rem', marginBottom: '1rem' }}>
+                                        Each poll offers the whole month — the &quot;around the&quot; day on your cadence
+                                        guides when the hangout lands, not when the poll is sent.
+                                    </p>
                                 </>
                             ) : (
                                 <>
                                     <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
                                         Send the poll this many days before each period (2–60)
                                     </label>
-                                    <input
-                                        type="number"
-                                        min="2"
-                                        max="60"
-                                        className="input-field"
-                                        value={schedDraft.leadDays}
-                                        onChange={(e) => setSchedDraft((prev) => ({ ...prev, leadDays: e.target.value }))}
-                                        style={{ maxWidth: '120px' }}
-                                    />
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
+                                        <input
+                                            type="number"
+                                            min="2"
+                                            max="60"
+                                            className="input-field"
+                                            value={schedDraft.leadDays}
+                                            onChange={(e) => setSchedDraft((prev) => ({ ...prev, leadDays: e.target.value }))}
+                                            style={{ maxWidth: '120px', marginBottom: 0 }}
+                                        />
+                                        {schedPreview?.occurrences && (
+                                            <span style={{ color: '#94a3b8', fontSize: '0.85rem' }}>
+                                                → sent on <strong style={{ color: '#c7d2fe' }}>{weekdayName(schedPreview.occurrences[1].sendOn)}s</strong>
+                                            </span>
+                                        )}
+                                    </div>
                                 </>
                             )}
 
@@ -500,6 +647,8 @@ export default function GroupManagePage() {
                                 onChange={(e) => setSchedDraft((prev) => ({ ...prev, deadlineDays: e.target.value }))}
                                 style={{ maxWidth: '120px' }}
                             />
+
+                            {schedPreview && <SchedulePreview group={group} preview={schedPreview} />}
 
                             <label style={{ color: '#94a3b8', fontSize: '0.85rem', display: 'block', marginBottom: '0.25rem' }}>
                                 Email you at *
