@@ -19,6 +19,7 @@ import {
     computeFirstWindow,
     computeCursor,
 } from '../../../../../lib/schedule'
+import { validateAutoScheduleConfig } from '../../../../../lib/autoSchedule'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -195,7 +196,30 @@ export async function POST(request, context) {
         if (configResult.error) {
             return Response.json({ error: configResult.error }, { status: 400 })
         }
-        const config = configResult.config
+
+        const autoResult = validateAutoScheduleConfig(body)
+        if (autoResult.error) {
+            return Response.json({ error: autoResult.error }, { status: 400 })
+        }
+
+        // Auto-scheduling acts on the owner's Google account from the cron,
+        // so it needs a Google-mode group AND a stored refresh token (minted
+        // on every Google sign-in since this feature shipped).
+        if (autoResult.config.auto_schedule_enabled) {
+            if (group.access_mode !== 'google') {
+                return Response.json({ error: 'Auto-scheduling needs a Google-connected owner — this group uses a private link.' }, { status: 400 })
+            }
+            const { data: owner } = await supabaseAdmin
+                .from('participants')
+                .select('google_refresh_token')
+                .eq('id', group.owner_participant_id)
+                .maybeSingle()
+            if (!owner?.google_refresh_token) {
+                return Response.json({ error: 'Connect your Google account first: sign out and sign in with Google again, then enable auto-scheduling.' }, { status: 400 })
+            }
+        }
+
+        const config = { ...configResult.config, ...autoResult.config }
 
         const { schedule: existing, error: scheduleError } = await getGroupSchedule(supabaseAdmin, group.id)
         if (scheduleError) {
@@ -242,6 +266,18 @@ export async function POST(request, context) {
         if (updateError || !updated) {
             return Response.json({ error: 'Could not save automatic-poll settings.' }, { status: 500 })
         }
+
+        // Turning auto-scheduling off cancels any generation already stamped
+        // (the cron also re-checks, but the stamp shouldn't linger).
+        if (existing.auto_schedule_enabled && !config.auto_schedule_enabled) {
+            await supabaseAdmin
+                .from('events')
+                .update({ auto_schedule_on: null })
+                .eq('created_by_schedule_id', existing.id)
+                .not('auto_schedule_on', 'is', null)
+                .is('auto_scheduled_at', null)
+        }
+
         return Response.json({ schedule: sanitizeSchedule(updated) })
     }
 
@@ -257,6 +293,20 @@ export async function POST(request, context) {
         let updates
         if (body.action === 'pause_schedule') {
             updates = { paused_at: new Date().toISOString() }
+
+            // A generation may be pending (summary sent, event not yet
+            // created). The owner chooses: cancel it too, or let tomorrow's
+            // run create the event and pause after. Cancel = null the stamp;
+            // the cron only acts on stamped events, so pausing alone doesn't
+            // block a generation the owner chose to keep.
+            if (body.cancelPendingGeneration) {
+                await supabaseAdmin
+                    .from('events')
+                    .update({ auto_schedule_on: null })
+                    .eq('created_by_schedule_id', schedule.id)
+                    .not('auto_schedule_on', 'is', null)
+                    .is('auto_scheduled_at', null)
+            }
         } else {
             // Resume re-anchors to the next FUTURE period — never catch-up
             // fires a poll for a period missed while paused.

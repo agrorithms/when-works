@@ -10,6 +10,7 @@ import {
     claimResponseForParticipant,
 } from '../../../../lib/participants'
 import { maybeSendAllRespondedSummary } from '../../../../lib/ownerNotifications'
+import { todayDateString } from '../../../../lib/groups'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -523,7 +524,7 @@ export async function POST(request, context) {
             try {
                 const { data: eventRow } = await supabaseAdmin
                     .from('events')
-                    .select('id, title, group_id, owner_summary_sent_at')
+                    .select('id, title, group_id, owner_summary_sent_at, created_by_schedule_id, date_range_start, date_range_end, blocked_dates')
                     .eq('id', event.id)
                     .maybeSingle()
 
@@ -531,7 +532,8 @@ export async function POST(request, context) {
                     await maybeSendAllRespondedSummary(
                         supabaseAdmin,
                         eventRow,
-                        process.env.NEXTAUTH_URL || 'http://localhost:3000'
+                        process.env.NEXTAUTH_URL || 'http://localhost:3000',
+                        todayDateString()
                     )
                 }
             } catch (notifyError) {

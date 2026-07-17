@@ -15,8 +15,19 @@ import {
     maxDeadlineDays,
     previewOccurrences,
 } from '../../../../lib/schedule'
+import { AUTO_INVITE_SCOPES, AUTO_INVITE_SCOPE_LABELS } from '../../../../lib/autoSchedule'
 
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+const TIMEZONES_FALLBACK = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'UTC']
+
+function browserTimezone() {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return 'America/New_York' }
+}
+
+function listTimezones() {
+    try { return Intl.supportedValuesOf('timeZone') } catch { return TIMEZONES_FALLBACK }
+}
 
 function getToday() {
     const now = new Date()
@@ -218,6 +229,8 @@ export default function GroupManagePage() {
     const [editingSchedule, setEditingSchedule] = useState(false)
     const [schedDraft, setSchedDraft] = useState(null)
     const [schedSaving, setSchedSaving] = useState(false)
+    const [pausePrompt, setPausePrompt] = useState(false)
+    const [timezones] = useState(listTimezones)
 
     const fetchBundle = useCallback(async () => {
         try {
@@ -296,7 +309,7 @@ export default function GroupManagePage() {
         )
     }
 
-    const { group, members, events, nudge, schedule } = bundle
+    const { group, members, events, nudge, schedule, pendingAutoSchedule, ownerCalendar } = bundle
     const countableEvents = events.filter((event) => event.countable)
     const planHref = planNextHref(group, ref)
     const automationActive = Boolean(schedule && !schedule.paused_at)
@@ -309,6 +322,11 @@ export default function GroupManagePage() {
     const nextDeadlineOn = automationActive
         ? computeDeadline(maxDate(schedule.next_send_on, today), schedule.deadline_days, schedule.next_window_start)
         : null
+    // Testing-mode Google tokens die after ~7 days; warn when the stored one
+    // is older than that (date-granular, same as the cron's view of time).
+    const tokenLikelyStale = Boolean(
+        ownerCalendar?.grantedAt && addDays(ownerCalendar.grantedAt.slice(0, 10), 7) < today
+    )
 
     const startEditSchedule = () => {
         setSchedDraft({
@@ -317,6 +335,10 @@ export default function GroupManagePage() {
             leadDays: String(schedule?.lead_days ?? 7),
             deadlineDays: String(schedule?.deadline_days ?? 5),
             notifyEmail: schedule?.notify_email || session?.user?.email || '',
+            autoEnabled: Boolean(schedule?.auto_schedule_enabled),
+            autoTime: schedule?.auto_event_time || '18:00',
+            autoTimezone: schedule?.auto_event_timezone || browserTimezone(),
+            autoScope: schedule?.auto_invite_scope || 'available',
         })
         setEditingSchedule(true)
     }
@@ -338,9 +360,18 @@ export default function GroupManagePage() {
             lead_days: group.cadence_unit === 'day' ? Number(schedDraft.leadDays) : null,
             deadline_days: Number(schedDraft.deadlineDays),
             notify_email: schedDraft.notifyEmail,
+            auto_schedule_enabled: schedDraft.autoEnabled,
+            auto_event_time: schedDraft.autoTime,
+            auto_event_timezone: schedDraft.autoTimezone,
+            auto_invite_scope: schedDraft.autoScope,
         })
         setSchedSaving(false)
         if (ok) setEditingSchedule(false)
+    }
+
+    const pauseSchedule = async (cancelPendingGeneration) => {
+        setPausePrompt(false)
+        await post('pause_schedule', { cancelPendingGeneration })
     }
 
     const startEditMember = (member) => {
@@ -545,15 +576,55 @@ export default function GroupManagePage() {
                                 {' · '}{schedule.deadline_days} day{schedule.deadline_days === 1 ? '' : 's'} to respond
                                 {' · '}notifies {schedule.notify_email}
                             </p>
-                            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.75rem' }}>
-                                <button className="button-secondary" onClick={startEditSchedule}>Edit</button>
-                                <button
-                                    className="button-secondary"
-                                    onClick={() => post(schedule.paused_at ? 'resume_schedule' : 'pause_schedule')}
-                                >
-                                    {schedule.paused_at ? '▶ Resume' : '⏸ Pause'}
-                                </button>
-                            </div>
+                            <p style={{ color: schedule.auto_schedule_enabled ? '#a7f3d0' : '#64748b', fontSize: '0.82rem', marginTop: '0.35rem' }}>
+                                {schedule.auto_schedule_enabled
+                                    ? `⚡ Auto-scheduling on — events at ${schedule.auto_event_time} (${schedule.auto_event_timezone}), invites: ${AUTO_INVITE_SCOPE_LABELS[schedule.auto_invite_scope].toLowerCase()}`
+                                    : 'Auto-scheduling off — you pick the date and create the calendar event yourself.'}
+                            </p>
+                            {pendingAutoSchedule && (
+                                <p style={{ color: '#c7d2fe', fontSize: '0.85rem', marginTop: '0.5rem' }}>
+                                    ⚡ The Google Calendar event for <strong>{pendingAutoSchedule.title}</strong> will be
+                                    created automatically on <strong>{formatDate(pendingAutoSchedule.scheduledFor)}</strong>.
+                                    Pick a date on the event page before then to schedule it yourself instead.
+                                </p>
+                            )}
+                            {pausePrompt ? (
+                                <div style={{ background: '#0f172a', border: '1px solid #6366f1', borderRadius: '12px', padding: '0.75rem 0.9rem', marginTop: '0.75rem' }}>
+                                    <p style={{ color: '#c7d2fe', fontSize: '0.85rem', marginBottom: '0.6rem' }}>
+                                        A calendar event for <strong>{pendingAutoSchedule?.title}</strong> is set to be created
+                                        automatically on {formatDate(pendingAutoSchedule?.scheduledFor)}. Should it still happen?
+                                    </p>
+                                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                        <button className="button-secondary" style={{ borderColor: '#ef4444', color: '#fca5a5' }} onClick={() => pauseSchedule(true)}>
+                                            Pause + cancel the event
+                                        </button>
+                                        <button className="button-secondary" onClick={() => pauseSchedule(false)}>
+                                            Create it, then pause
+                                        </button>
+                                        <button className="button-secondary" onClick={() => setPausePrompt(false)}>
+                                            Never mind
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.75rem' }}>
+                                    <button className="button-secondary" onClick={startEditSchedule}>Edit</button>
+                                    <button
+                                        className="button-secondary"
+                                        onClick={() => {
+                                            if (schedule.paused_at) {
+                                                post('resume_schedule')
+                                            } else if (pendingAutoSchedule) {
+                                                setPausePrompt(true)
+                                            } else {
+                                                post('pause_schedule')
+                                            }
+                                        }}
+                                    >
+                                        {schedule.paused_at ? '▶ Resume' : '⏸ Pause'}
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -661,6 +732,100 @@ export default function GroupManagePage() {
                                 onChange={(e) => setSchedDraft((prev) => ({ ...prev, notifyEmail: e.target.value }))}
                                 style={{ maxWidth: '320px' }}
                             />
+
+                            {/* Auto-scheduling opt-in. The cron acts on the owner's
+                                Google account, so it needs a Google-mode group and a
+                                stored refresh token (minted at sign-in). */}
+                            <div style={{ background: '#0f172a', border: '1px solid #334155', borderRadius: '12px', padding: '0.9rem 1rem', marginBottom: '1rem' }}>
+                                <p style={{ color: '#e2e8f0', fontSize: '0.9rem', marginBottom: '0.35rem' }}>⚡ Automatic scheduling</p>
+                                <p style={{ color: '#94a3b8', fontSize: '0.82rem', marginBottom: '0.6rem' }}>
+                                    The day after your poll summary, the app picks the best date, creates the
+                                    Google Calendar event from your account, and sends the invites for you.
+                                </p>
+
+                                {group.access_mode !== 'google' ? (
+                                    <p style={{ color: '#64748b', fontSize: '0.82rem' }}>
+                                        Not available for link-managed groups — automatic scheduling needs a
+                                        Google-signed-in owner to create the calendar event as.
+                                    </p>
+                                ) : !ownerCalendar?.connected ? (
+                                    <p style={{ color: '#fbbf24', fontSize: '0.82rem' }}>
+                                        Connect your Google account first: sign out of the app and sign in with
+                                        Google again, then come back to enable this.
+                                    </p>
+                                ) : (
+                                    <>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#cbd5e1', fontSize: '0.88rem', cursor: 'pointer', marginBottom: schedDraft.autoEnabled ? '0.75rem' : 0 }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={schedDraft.autoEnabled}
+                                                onChange={(e) => setSchedDraft((prev) => ({ ...prev, autoEnabled: e.target.checked }))}
+                                            />
+                                            Automatically schedule the hangout and send calendar invites
+                                        </label>
+
+                                        {schedDraft.autoEnabled && (
+                                            <>
+                                                {tokenLikelyStale && (
+                                                    <p style={{ color: '#fbbf24', fontSize: '0.8rem', marginBottom: '0.6rem' }}>
+                                                        ⚠️ Your Google connection is over 7 days old and may have expired —
+                                                        sign in again if auto-scheduling reports a connection problem.
+                                                    </p>
+                                                )}
+                                                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+                                                    <div>
+                                                        <label style={{ color: '#94a3b8', fontSize: '0.82rem', display: 'block', marginBottom: '0.25rem' }}>
+                                                            Event start time
+                                                        </label>
+                                                        <input
+                                                            type="time"
+                                                            className="input-field"
+                                                            value={schedDraft.autoTime}
+                                                            onChange={(e) => setSchedDraft((prev) => ({ ...prev, autoTime: e.target.value }))}
+                                                            style={{ maxWidth: '140px', marginBottom: 0 }}
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label style={{ color: '#94a3b8', fontSize: '0.82rem', display: 'block', marginBottom: '0.25rem' }}>
+                                                            Timezone
+                                                        </label>
+                                                        <select
+                                                            className="input-field"
+                                                            value={schedDraft.autoTimezone}
+                                                            onChange={(e) => setSchedDraft((prev) => ({ ...prev, autoTimezone: e.target.value }))}
+                                                            style={{ maxWidth: '240px', marginBottom: 0 }}
+                                                        >
+                                                            {!timezones.includes(schedDraft.autoTimezone) && (
+                                                                <option value={schedDraft.autoTimezone}>{schedDraft.autoTimezone}</option>
+                                                            )}
+                                                            {timezones.map((tz) => (
+                                                                <option key={tz} value={tz}>{tz}</option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                                <label style={{ color: '#94a3b8', fontSize: '0.82rem', display: 'block', marginBottom: '0.25rem' }}>
+                                                    Send the calendar invite to
+                                                </label>
+                                                <select
+                                                    className="input-field"
+                                                    value={schedDraft.autoScope}
+                                                    onChange={(e) => setSchedDraft((prev) => ({ ...prev, autoScope: e.target.value }))}
+                                                    style={{ maxWidth: '320px', marginBottom: '0.35rem' }}
+                                                >
+                                                    {AUTO_INVITE_SCOPES.map((scope) => (
+                                                        <option key={scope} value={scope}>{AUTO_INVITE_SCOPE_LABELS[scope]}</option>
+                                                    ))}
+                                                </select>
+                                                <p style={{ color: '#64748b', fontSize: '0.78rem', marginBottom: 0 }}>
+                                                    Only people with an email in the system can be invited — the
+                                                    confirmation email lists exactly who was and wasn&apos;t, and why.
+                                                </p>
+                                            </>
+                                        )}
+                                    </>
+                                )}
+                            </div>
 
                             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                                 <button className="button-primary" disabled={schedSaving} onClick={saveSchedule}>
