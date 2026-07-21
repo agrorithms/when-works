@@ -30,7 +30,8 @@ No test suite configured.
 - **Identity = participants table** (`lib/participants.js`): signed-in users resolve by normalized email, guests by `participant_token`. The legacy identity columns (`google_email`/`owner_user_id`/`owner_email`) and `user_profiles` were dropped by `005_cleanup_legacy_identity.sql` — never reference them. Emails are ALWAYS normalized (`normalizeEmail`) before storage or lookup.
 - **Responses soft-delete** via `deleted_at` — every responses query must filter `.is('deleted_at', null)` unless it deliberately wants deleted rows (guest numbering, owner restore list, export).
 - **Schedule/cron date math lives in `lib/schedule.js`** (pure, dependency-free, client-importable — "today" is always a parameter). Group cadence is hybrid: `cadence_unit 'day'|'month'` + `cadence_interval` + `cadence_anchor_day`; never reference the deprecated `cadence_days`.
-- **All cron mutations use compare-and-set updates** (`update … where <marker still unclaimed>` + `.select()`, 0 rows = another invocation won). The daily cron (`app/api/cron/daily`, registered in `vercel.json`) auto-creates group polls, sends pre-send notices, and sends deadline summaries; `events.owner_summary_sent_at` is the single owner-summary marker shared with the respond route's all-responded hook — always claim before sending.
+- **All cron mutations use compare-and-set updates** (`update … where <marker still unclaimed>` + `.select()`, 0 rows = another invocation won). The daily cron (`app/api/cron/daily`, registered in `vercel.json`) auto-creates group polls, sends pre-send notices, sends deadline summaries, and auto-schedules opted-in polls; `events.owner_summary_sent_at` is the single owner-summary marker shared with the respond route's all-responded hook — always claim before sending.
+- **Auto-scheduling** (opt-in per group schedule): summaries stamp `events.auto_schedule_on` (generation = next cron run ≥1 day later); the cron CAS-claims `events.auto_scheduled_at` before calling Google, then records a CLOSED `event_followups` round (`lib/hostingRounds.js`). The owner's Google refresh token lives in `participants.google_refresh_token` (server-only, captured at sign-in in `lib/auth.js`). Pick/bucket/validation logic is pure in `lib/autoSchedule.js`; Google calls in `lib/googleCalendar.js`. See `docs/decisions.md`.
 
 ## Where things live
 
@@ -72,3 +73,5 @@ RESEND_FROM_EMAIL                 # e.g. "When Works <notify@yourdomain>"
 ```
 
 SQL migrations live in `supabase/migrations/` and are run manually in the Supabase SQL editor (see file headers for ordering constraints).
+
+**Two Supabase projects since July 2026**: dev (local) and staging share one Supabase project; production uses a separate one. Test data never touches prod, but every migration must be run in BOTH projects — dev/staging first, prod when the code deploys there. Within each environment, additive migrations still run before the code that needs them deploys, and destructive drops still wait until the referencing code is gone.

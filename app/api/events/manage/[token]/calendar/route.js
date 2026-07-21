@@ -3,26 +3,11 @@ import { authOptions } from '../../../../../../lib/auth'
 import { getSupabaseAdmin } from '../../../../../../lib/supabaseAdmin'
 import { resolveOwnership } from '../../../../../../lib/ownership'
 import { isResponseAvailableOnDate } from '../../../../../../lib/attendance'
+import { insertCalendarEvent } from '../../../../../../lib/googleCalendar'
+import { recordScheduledDate } from '../../../../../../lib/hostingRounds'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
-
-function buildEndDateTime(selectedDate, startTime) {
-    const [startHour, startMinute] = startTime.split(':').map(Number)
-    const totalMinutes = startHour * 60 + startMinute + 120 // 2-hour default duration
-    const endHour = Math.floor(totalMinutes / 60) % 24
-    const endMinute = totalMinutes % 60
-    const dayOverflow = Math.floor(totalMinutes / (24 * 60))
-
-    let endDate = selectedDate
-    if (dayOverflow > 0) {
-        const d = new Date(selectedDate + 'T12:00:00')
-        d.setDate(d.getDate() + dayOverflow)
-        endDate = d.toISOString().split('T')[0]
-    }
-
-    return `${endDate}T${String(endHour).padStart(2, '0')}:${String(endMinute).padStart(2, '0')}:00`
-}
 
 export async function POST(request, context) {
     const session = await getServerSession(authOptions)
@@ -83,40 +68,36 @@ export async function POST(request, context) {
     const withEmail = availableResponses.filter(r => attendeeEmail(r))
     const withoutEmail = availableResponses.filter(r => !attendeeEmail(r))
 
-    const startDateTime = `${selectedDate}T${startTime}:00`
-    const endDateTime = buildEndDateTime(selectedDate, startTime)
-
-    const calendarEvent = {
+    const created = await insertCalendarEvent({
+        accessToken: session.accessToken,
         summary: event.title,
         description: event.description || '',
-        start: { dateTime: startDateTime, timeZone: timezone },
-        end: { dateTime: endDateTime, timeZone: timezone },
-        attendees: withEmail.map(r => ({ email: attendeeEmail(r) })),
+        selectedDate,
+        startTime,
+        timezone,
+        attendeeEmails: withEmail.map(attendeeEmail),
+    })
+
+    if (created.error) {
+        return Response.json({ error: created.error }, { status: created.status || 502 })
     }
 
-    const gcalRes = await fetch(
-        'https://www.googleapis.com/calendar/v3/calendars/primary/events',
-        {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${session.accessToken}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(calendarEvent),
-        }
-    )
-
-    const gcalData = await gcalRes.json()
-
-    if (!gcalRes.ok) {
-        return Response.json(
-            { error: gcalData.error?.message || 'Google Calendar API error.' },
-            { status: gcalRes.status }
-        )
+    // Generating a calendar event decides the date: record it as a closed
+    // round so attendance counts and automation sees the poll as resolved.
+    // Best-effort — the Google event exists either way.
+    const recorded = await recordScheduledDate(supabaseAdmin, {
+        eventId: event.id,
+        selectedDate,
+        timezone,
+        calendarEventId: created.eventId,
+        calendarPayload: { htmlLink: created.htmlLink, startTime },
+    })
+    if (recorded.error) {
+        console.error('[calendar] could not record scheduled date:', recorded.error)
     }
 
     return Response.json({
-        eventUrl: gcalData.htmlLink,
+        eventUrl: created.htmlLink,
         addedGuests: withEmail.map(r => r.display_name),
         skippedGuests: withoutEmail.map(r => r.display_name),
     })
